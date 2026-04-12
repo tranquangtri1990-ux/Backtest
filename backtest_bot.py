@@ -1,8 +1,11 @@
 # ============================================================
 # BACKTEST BOT - TELEGRAM
-# - Tin hieu mua: xac dinh cuoi tuan (gia dong tuan)
-# - Trailing stop: theo doi hang ngay, ban khi cham stop
-# - Von ban dau: 50,000,000d
+# - Tin hieu mua: dong tuan thoa 3 dieu kien
+# - Gia mua    : gia dong cua tuan tin hieu
+# - Trailing stop theo ngay:
+#     + Dinh = gia cao nhat ke tu ngay mua, chi tang khong giam
+#     + Ban khi: gia dong cua ngay <= Dinh * 90%
+# - Loi nhuan: (gia ban - gia mua) / gia mua * 100%
 # ============================================================
 
 import os
@@ -25,7 +28,6 @@ SEP = '-' * 35
 
 # -------------------- Lay du lieu --------------------
 def get_data(symbol):
-    """Lay ca du lieu ngay va du lieu tuan"""
     try:
         from vnstock import Vnstock
         stock = Vnstock().stock(symbol=symbol, source='VCI')
@@ -46,15 +48,12 @@ def get_data(symbol):
         df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume'})
         df = df.sort_index().dropna(subset=['Close', 'Volume'])
 
-        # Du lieu tuan de tinh chi bao
         weekly = df.resample('W-FRI').agg({
             'Close' : 'last',
-            'High'  : 'max',
-            'Low'   : 'min',
             'Volume': 'sum',
         }).dropna()
 
-        return df, weekly  # daily, weekly
+        return df, weekly
 
     except Exception as e:
         logging.error('get_data loi: ' + str(e))
@@ -92,7 +91,6 @@ def calc_weekly_indicators(weekly):
     return df
 
 def check_buy_signal(df_w, i):
-    """Kiem tra tin hieu mua tai tuan thu i"""
     if i < 1:
         return False
     row  = df_w.iloc[i]
@@ -114,55 +112,63 @@ def run_backtest(symbol, initial_capital=50_000_000):
         return {'error': 'Khong lay duoc du lieu cho ma ' + symbol}
 
     df_w = calc_weekly_indicators(weekly)
-
-    # Chi backtest tu 2023
     df_w_bt = df_w[df_w.index >= '2023-01-01']
     if df_w_bt.empty:
         return {'error': 'Khong co du lieu tu 2023'}
 
     capital  = initial_capital
     trades   = []
-    position = None  # dict khi dang giu lenh
+    position = None
 
-    for wi in range(1, len(df_w_bt)):
-        week_end   = df_w_bt.index[wi]   # Thu 6 cua tuan nay
-        week_start = df_w_bt.index[wi-1] # Thu 6 tuan truoc
+    # Tao list tuan de duyet
+    week_dates = df_w_bt.index.tolist()
 
-        # --- Neu dang giu lenh: theo doi trailing stop theo NGAY ---
+    for wi, week_end in enumerate(week_dates):
+        global_wi = df_w.index.get_loc(week_end)
+
+        # ---- Dang giu lenh: kiem tra trailing stop theo tung ngay trong tuan ----
         if position is not None:
-            # Lay tat ca phien giao dich trong tuan nay (sau ngay mua)
-            days_in_week = daily[
+            # Lay tat ca phien giao dich TRONG TUAN NAY (sau ngay mua)
+            days_this_week = daily[
                 (daily.index > position['buy_date']) &
                 (daily.index <= week_end)
             ]
 
             sold = False
-            for day_date, day_row in days_in_week.iterrows():
-                day_price = day_row['Close']
+            for day_ts, day_row in days_this_week.iterrows():
+                close = day_row['Close']
 
-                # Cap nhat dinh cao nhat
-                if day_price > position['peak']:
-                    position['peak'] = day_price
+                # Cap nhat dinh - chi tang, khong bao gio giam
+                if close > position['peak']:
+                    position['peak'] = close
 
                 stop_price = position['peak'] * 0.90
 
-                if day_price <= stop_price:
-                    # BAN tai gia dong cua ngay cham stop
-                    sell_value = position['shares'] * day_price
-                    profit     = sell_value - position['cost']
-                    capital    = sell_value
+                # Ban khi gia dong cua ngay <= stop
+                if close <= stop_price:
+                    gia_mua    = position['buy_price']
+                    gia_ban    = close
+                    shares     = position['shares']
+                    von_vao    = position['cost']
+                    sell_value = shares * gia_ban
+                    # Loi nhuan theo % gia ban/mua
+                    pct_trade  = (gia_ban - gia_mua) / gia_mua * 100
+                    # Cap nhat von theo ket qua lenh
+                    capital    = von_vao * (1 + pct_trade / 100)
+
                     trades.append({
                         'stt'      : len(trades) + 1,
                         'loai'     : 'Ban',
                         'ngay_mua' : position['buy_date'].strftime('%Y-%m-%d'),
-                        'gia_mua'  : round(position['buy_price'], 2),
-                        'ngay_ban' : day_date.strftime('%Y-%m-%d'),
-                        'gia_ban'  : round(day_price, 2),
+                        'gia_mua'  : round(gia_mua, 2),
+                        'ngay_ban' : day_ts.strftime('%Y-%m-%d'),
+                        'gia_ban'  : round(gia_ban, 2),
                         'gia_dinh' : round(position['peak'], 2),
                         'gia_stop' : round(stop_price, 2),
-                        'von_dau'  : round(position['cost'], 0),
-                        'gia_tri'  : round(sell_value, 0),
-                        'lai_lo'   : round(profit, 0),
+                        'von_dau'  : round(von_vao, 0),
+                        'gia_tri'  : round(capital, 0),
+                        'pct'      : round(pct_trade, 2),
+                        'lai_lo'   : round(capital - von_vao, 0),
                         'von_sau'  : round(capital, 0),
                         'dang_giu' : False,
                     })
@@ -170,57 +176,64 @@ def run_backtest(symbol, initial_capital=50_000_000):
                     sold = True
                     break
 
-            if sold:
+            # Van dang giu, tiep tuc sang tuan sau
+            if sold or position is not None:
+                if not sold:
+                    # Kiem tra tin hieu mua moi khong apply khi dang giu
+                    pass
                 continue
-            else:
-                continue  # Van dang giu, sang tuan sau
 
-        # --- Chua co lenh: kiem tra tin hieu mua cuoi tuan ---
-        global_wi = df_w.index.get_loc(week_end)
-        if check_buy_signal(df_w, global_wi):
-            buy_price = df_w_bt.iloc[wi]['Close']  # Gia dong cua tuan
-            buy_date  = week_end
-            position  = {
+        # ---- Chua co lenh: kiem tra tin hieu mua cuoi tuan ----
+        if position is None and check_buy_signal(df_w, global_wi):
+            gia_mua  = df_w.iloc[global_wi]['Close']
+            buy_date = week_end
+            position = {
                 'buy_date' : buy_date,
-                'buy_price': buy_price,
-                'shares'   : capital / buy_price,
+                'buy_price': gia_mua,
+                'shares'   : capital / gia_mua,
                 'cost'     : capital,
-                'peak'     : buy_price,
+                'peak'     : gia_mua,  # Dinh ban dau = gia mua
             }
 
-    # Lenh dang giu chua ban
+    # ---- Lenh dang giu chua ban ----
     if position is not None:
-        last_day   = daily[daily.index > position['buy_date']]
-        if not last_day.empty:
-            last_price = last_day.iloc[-1]['Close']
-            last_date  = last_day.index[-1].strftime('%Y-%m-%d')
-        else:
-            last_price = position['buy_price']
-            last_date  = position['buy_date'].strftime('%Y-%m-%d')
+        # Lay tat ca phien tu sau ngay mua den hien tai
+        days_after = daily[daily.index > position['buy_date']]
 
-        # Cap nhat dinh theo tat ca phien sau khi mua
-        for _, row in last_day.iterrows():
+        # Cap nhat dinh
+        for _, row in days_after.iterrows():
             if row['Close'] > position['peak']:
                 position['peak'] = row['Close']
 
-        current_val = position['shares'] * last_price
-        profit      = current_val - position['cost']
+        if not days_after.empty:
+            last_close = days_after.iloc[-1]['Close']
+            last_date  = days_after.index[-1].strftime('%Y-%m-%d')
+        else:
+            last_close = position['buy_price']
+            last_date  = position['buy_date'].strftime('%Y-%m-%d')
+
+        gia_mua   = position['buy_price']
+        pct_trade = (last_close - gia_mua) / gia_mua * 100
+        von_vao   = position['cost']
+        current   = von_vao * (1 + pct_trade / 100)
+
         trades.append({
             'stt'      : len(trades) + 1,
             'loai'     : 'Dang giu',
             'ngay_mua' : position['buy_date'].strftime('%Y-%m-%d'),
-            'gia_mua'  : round(position['buy_price'], 2),
+            'gia_mua'  : round(gia_mua, 2),
             'ngay_ban' : last_date,
-            'gia_ban'  : round(last_price, 2),
+            'gia_ban'  : round(last_close, 2),
             'gia_dinh' : round(position['peak'], 2),
             'gia_stop' : round(position['peak'] * 0.90, 2),
-            'von_dau'  : round(position['cost'], 0),
-            'gia_tri'  : round(current_val, 0),
-            'lai_lo'   : round(profit, 0),
-            'von_sau'  : round(current_val, 0),
+            'von_dau'  : round(von_vao, 0),
+            'gia_tri'  : round(current, 0),
+            'pct'      : round(pct_trade, 2),
+            'lai_lo'   : round(current - von_vao, 0),
+            'von_sau'  : round(current, 0),
             'dang_giu' : True,
         })
-        capital = current_val
+        capital = current
 
     return {
         'symbol'     : symbol.upper(),
@@ -240,7 +253,8 @@ def format_result(r):
     msgs = []
 
     tong = (
-        '<b>BACKTEST ' + r['symbol'] + ' (Tin hieu W, trailing stop D)</b>\n' +
+        '<b>BACKTEST ' + r['symbol'] + '</b>\n'
+        '(Tin hieu tuan | Trailing stop ngay 10%)\n' +
         SEP + '\n'
         'Von ban dau : ' + f"{r['von_ban_dau']:,.0f}" + 'd\n'
         'Von cuoi    : ' + f"{r['von_cuoi']:,.0f}" + 'd\n'
@@ -253,19 +267,16 @@ def format_result(r):
     chunk = []
     for t in r['trades']:
         status  = 'DANG GIU' if t['dang_giu'] else 'BAN'
-        ngay_ky = 'Hien tai' if t['dang_giu'] else 'Ban'
-        lai_str = f"{t['lai_lo']:+,.0f}" + 'd'
-        pct_t   = round((t['lai_lo'] / t['von_dau']) * 100, 2) if t['von_dau'] else 0
+        label   = 'Hien tai' if t['dang_giu'] else 'Ban'
 
         dong = (
             '<b>#' + str(t['stt']) + ' ' + status + '</b>\n'
-            '  Mua      : ' + t['ngay_mua'] + ' @ ' + f"{t['gia_mua']:,}" + 'd\n'
-            '  ' + ngay_ky + '  : ' + t['ngay_ban'] + ' @ ' + f"{t['gia_ban']:,}" + 'd\n'
+            '  Mua     : ' + t['ngay_mua'] + ' @ ' + f"{t['gia_mua']:,}" + 'd\n'
+            '  ' + label + '   : ' + t['ngay_ban'] + ' @ ' + f"{t['gia_ban']:,}" + 'd\n'
             '  Dinh/Stop: ' + f"{t['gia_dinh']:,}" + 'd / ' + f"{t['gia_stop']:,}" + 'd\n'
             '  Von vao  : ' + f"{t['von_dau']:,.0f}" + 'd\n'
-            '  Gia tri  : ' + f"{t['gia_tri']:,.0f}" + 'd\n'
-            '  Lai/Lo   : ' + lai_str + ' (' + f"{pct_t:+.2f}" + '%)\n'
-            '  Von sau  : ' + f"{t['von_sau']:,.0f}" + 'd'
+            '  Von sau  : ' + f"{t['von_sau']:,.0f}" + 'd\n'
+            '  Lai/Lo   : ' + f"{t['lai_lo']:+,.0f}" + 'd (' + f"{t['pct']:+.2f}" + '%)'
         )
         chunk.append(dong)
         if len(chunk) == 4:
@@ -277,45 +288,42 @@ def format_result(r):
 
     return msgs
 
-# -------------------- Telegram handler --------------------
+# -------------------- Telegram --------------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip().upper()
 
     if not (2 <= len(text) <= 5 and text.isalpha()):
         await update.message.reply_text(
-            'Vui long nhap ma co phieu (VD: VCB, HPG, FPT...)',
+            'Vui long nhap ma co phieu (VD: VCB, HPG, CDC...)',
             parse_mode='HTML'
         )
         return
 
     await update.message.reply_text(
         '<b>Dang chay backtest cho ' + text + '...</b>\n'
-        'Von: 50,000,000d | Tin hieu W | Trailing stop D\n'
+        'Von: 50,000,000d | Tin hieu W | Stop D 10%\n'
         'Vui long cho...',
         parse_mode='HTML'
     )
 
     result = run_backtest(text)
     msgs   = format_result(result)
-
     for msg in msgs:
         await update.message.reply_text(msg, parse_mode='HTML')
 
-# -------------------- Main --------------------
 async def post_init(app):
-    """Gui thong bao khi bot san sang"""
     await app.bot.send_message(
         chat_id=CHAT_ID,
         text=(
             '<b>Bot Backtest da san sang!</b>\n' +
             SEP + '\n'
-            'Nhap ma co phieu bat ky de chay backtest.\n'
+            'Nhap ma co phieu de chay backtest.\n'
             'Vi du: VCB, HPG, FPT, CDC...\n\n'
             'Thong so:\n'
-            '  - Von ban dau: 50,000,000d\n'
-            '  - Tin hieu mua: khung tuan\n'
-            '  - Trailing stop: theo ngay, khoang cach 10%\n'
-            '  - Du lieu tu: 2023 den hien tai'
+            '  Von ban dau : 50,000,000d\n'
+            '  Tin hieu mua: dong tuan\n'
+            '  Trailing stop: theo ngay, 10%\n'
+            '  Du lieu tu  : 2023 den hien tai'
         ),
         parse_mode='HTML'
     )
