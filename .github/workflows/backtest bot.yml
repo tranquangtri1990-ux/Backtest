@@ -1,0 +1,23 @@
+name: Backtest Bot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backtest_bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # Chạy liên tục tối đa 6 giờ
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cài thư viện
+        run: pip install vnstock pandas requests numpy python-telegram-bot
+
+      - name: Chạy backtest bot
+        run: python backtest_bot.py
