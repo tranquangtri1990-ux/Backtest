@@ -4,9 +4,9 @@
 #   [MA]      : backtest 1 ma voi tham so hien tai
 #   /scanall  : quet toan bo
 #   /config   : xem tham so hien tai
-#   /set      : chinh tham so
-#                 /set vol 150     -> volume > 150% MA20
-#                 /set trend 3     -> SMA(RSI) tang trong 3 phien
+#   /set vol [so]   : volume > so% MA20        (mac dinh 120)
+#   /set trend [so] : SMA(RSI) tang/ngang so phien (mac dinh 1)
+#   /set stop [so]  : trailing stop so%        (mac dinh 10)
 # Tu tat sau 30 phut khong hoat dong
 # ============================================================
 
@@ -34,14 +34,12 @@ logging.basicConfig(level=logging.INFO)
 SEP = '-' * 35
 
 # -------------------- Tham so toan cuc --------------------
-# vol_pct : volume phai > vol_pct% cua MA20
-# trend_n : so phien lien tiep SMA(RSI) phai tang hoac di ngang
 CONFIG = {
-    'vol_pct' : 120,   # %
-    'trend_n' : 1,     # 1 = chi can phien hien tai >= phien truoc
+    'vol_pct' : 120,   # Volume > vol_pct% MA20
+    'trend_n' : 1,     # SMA(RSI) tang/ngang lien tiep n phien
+    'stop_pct': 10,    # Trailing stop: ban khi gia <= peak * (1 - stop_pct/100)
 }
 
-# Thoi gian hoat dong cuoi cung (de tu tat)
 last_activity = [time.time()]
 
 def update_activity():
@@ -112,50 +110,37 @@ def calc_weekly_indicators(weekly):
     return df
 
 def check_buy_signal(df_w, i, vol_pct, trend_n):
-    """
-    vol_pct : volume > vol_pct% cua MA20
-    trend_n : SMA(RSI) phai tang lien tiep trong trend_n phien
-    """
     if i < max(1, trend_n):
         return False
     row  = df_w.iloc[i]
     prev = df_w.iloc[i - 1]
-
-    # Kiem tra NaN
     if any(pd.isna(row[c]) for c in ['Volume', 'ma20_vol', 'rsi', 'sma_rsi']):
         return False
     if pd.isna(prev['rsi']) or pd.isna(prev['sma_rsi']):
         return False
-
-    # DK1: Volume
     dk1 = row['Volume'] > (vol_pct / 100) * row['ma20_vol']
-
-    # DK2: RSI cat len SMA(RSI)
     dk2 = prev['rsi'] <= prev['sma_rsi'] and row['rsi'] > row['sma_rsi']
-
-    # DK3: SMA(RSI) tang lien tiep trend_n phien
     dk3 = True
     for k in range(trend_n):
-        idx_cur  = i - k
-        idx_prev = i - k - 1
+        idx_cur, idx_prev = i - k, i - k - 1
         if idx_prev < 0:
             dk3 = False
             break
         s_cur  = df_w.iloc[idx_cur]['sma_rsi']
         s_prev = df_w.iloc[idx_prev]['sma_rsi']
-        if pd.isna(s_cur) or pd.isna(s_prev):
+        if pd.isna(s_cur) or pd.isna(s_prev) or s_cur < s_prev:
             dk3 = False
             break
-        if s_cur < s_prev:  # Cho phep di ngang (>=)
-            dk3 = False
-            break
-
     return dk1 and dk2 and dk3
 
 # -------------------- Backtest 1 ma --------------------
-def run_backtest(symbol, initial_capital=50_000_000, vol_pct=None, trend_n=None):
+def run_backtest(symbol, initial_capital=50_000_000,
+                 vol_pct=None, trend_n=None, stop_pct=None):
     if vol_pct  is None: vol_pct  = CONFIG['vol_pct']
     if trend_n  is None: trend_n  = CONFIG['trend_n']
+    if stop_pct is None: stop_pct = CONFIG['stop_pct']
+
+    stop_mult = 1 - stop_pct / 100  # VD: stop 10% -> nhan 0.90
 
     daily, weekly = get_data(symbol)
     if daily is None or weekly is None:
@@ -174,6 +159,27 @@ def run_backtest(symbol, initial_capital=50_000_000, vol_pct=None, trend_n=None)
     position = None
     day_idx  = 0
 
+    def make_trade(stt, buy_date, buy_price, sell_date, sell_price, peak, von_vao):
+        stop_p    = peak * stop_mult
+        pct_trade = (sell_price - buy_price) / buy_price * 100
+        cap_new   = von_vao * (1 + pct_trade / 100)
+        return {
+            'stt'      : stt,
+            'loai'     : 'Ban',
+            'ngay_mua' : buy_date.strftime('%Y-%m-%d'),
+            'gia_mua'  : round(buy_price, 2),
+            'ngay_ban' : sell_date.strftime('%Y-%m-%d'),
+            'gia_ban'  : round(sell_price, 2),
+            'gia_dinh' : round(peak, 2),
+            'gia_stop' : round(stop_p, 2),
+            'von_dau'  : round(von_vao, 0),
+            'gia_tri'  : round(cap_new, 0),
+            'pct'      : round(pct_trade, 2),
+            'lai_lo'   : round(cap_new - von_vao, 0),
+            'von_sau'  : round(cap_new, 0),
+            'dang_giu' : False,
+        }, cap_new
+
     for wi, week_end in enumerate(df_w_bt.index.tolist()):
         global_wi = df_w.index.get_loc(week_end)
 
@@ -186,29 +192,15 @@ def run_backtest(symbol, initial_capital=50_000_000, vol_pct=None, trend_n=None)
                 if day_ts <= position['buy_date']:
                     day_idx += 1
                     continue
-                stop_price = position['peak'] * 0.90
+                stop_price = position['peak'] * stop_mult
                 if day_row['Low'] <= stop_price:
-                    gia_ban   = stop_price
-                    gia_mua   = position['buy_price']
-                    pct_trade = (gia_ban - gia_mua) / gia_mua * 100
-                    von_vao   = position['cost']
-                    capital   = von_vao * (1 + pct_trade / 100)
-                    trades.append({
-                        'stt'      : len(trades) + 1,
-                        'loai'     : 'Ban',
-                        'ngay_mua' : position['buy_date'].strftime('%Y-%m-%d'),
-                        'gia_mua'  : round(gia_mua, 2),
-                        'ngay_ban' : day_ts.strftime('%Y-%m-%d'),
-                        'gia_ban'  : round(gia_ban, 2),
-                        'gia_dinh' : round(position['peak'], 2),
-                        'gia_stop' : round(stop_price, 2),
-                        'von_dau'  : round(von_vao, 0),
-                        'gia_tri'  : round(capital, 0),
-                        'pct'      : round(pct_trade, 2),
-                        'lai_lo'   : round(capital - von_vao, 0),
-                        'von_sau'  : round(capital, 0),
-                        'dang_giu' : False,
-                    })
+                    t, capital = make_trade(
+                        len(trades)+1,
+                        position['buy_date'], position['buy_price'],
+                        day_ts, stop_price,
+                        position['peak'], position['cost']
+                    )
+                    trades.append(t)
                     position = None
                     day_idx += 1
                     sold = True
@@ -243,28 +235,15 @@ def run_backtest(symbol, initial_capital=50_000_000, vol_pct=None, trend_n=None)
             if day_ts <= position['buy_date']:
                 day_idx += 1
                 continue
-            stop_price = position['peak'] * 0.90
+            stop_price = position['peak'] * stop_mult
             if day_row['Low'] <= stop_price:
-                gia_ban   = stop_price
-                gia_mua   = position['buy_price']
-                pct_trade = (gia_ban - gia_mua) / gia_mua * 100
-                von_vao   = position['cost']
-                capital   = von_vao * (1 + pct_trade / 100)
-                trades.append({
-                    'stt': len(trades)+1, 'loai': 'Ban',
-                    'ngay_mua': position['buy_date'].strftime('%Y-%m-%d'),
-                    'gia_mua': round(gia_mua, 2),
-                    'ngay_ban': day_ts.strftime('%Y-%m-%d'),
-                    'gia_ban': round(gia_ban, 2),
-                    'gia_dinh': round(position['peak'], 2),
-                    'gia_stop': round(stop_price, 2),
-                    'von_dau': round(von_vao, 0),
-                    'gia_tri': round(capital, 0),
-                    'pct': round(pct_trade, 2),
-                    'lai_lo': round(capital - von_vao, 0),
-                    'von_sau': round(capital, 0),
-                    'dang_giu': False,
-                })
+                t, capital = make_trade(
+                    len(trades)+1,
+                    position['buy_date'], position['buy_price'],
+                    day_ts, stop_price,
+                    position['peak'], position['cost']
+                )
+                trades.append(t)
                 position = None
                 break
             if day_row['High'] > position['peak']:
@@ -280,19 +259,20 @@ def run_backtest(symbol, initial_capital=50_000_000, vol_pct=None, trend_n=None)
             current    = von_vao * (1 + pct_trade / 100)
             capital    = current
             trades.append({
-                'stt': len(trades)+1, 'loai': 'Dang giu',
-                'ngay_mua': position['buy_date'].strftime('%Y-%m-%d'),
-                'gia_mua': round(gia_mua, 2),
-                'ngay_ban': last_ts.strftime('%Y-%m-%d'),
-                'gia_ban': round(last_close, 2),
-                'gia_dinh': round(position['peak'], 2),
-                'gia_stop': round(position['peak'] * 0.90, 2),
-                'von_dau': round(von_vao, 0),
-                'gia_tri': round(current, 0),
-                'pct': round(pct_trade, 2),
-                'lai_lo': round(current - von_vao, 0),
-                'von_sau': round(current, 0),
-                'dang_giu': True,
+                'stt'      : len(trades)+1,
+                'loai'     : 'Dang giu',
+                'ngay_mua' : position['buy_date'].strftime('%Y-%m-%d'),
+                'gia_mua'  : round(gia_mua, 2),
+                'ngay_ban' : last_ts.strftime('%Y-%m-%d'),
+                'gia_ban'  : round(last_close, 2),
+                'gia_dinh' : round(position['peak'], 2),
+                'gia_stop' : round(position['peak'] * stop_mult, 2),
+                'von_dau'  : round(von_vao, 0),
+                'gia_tri'  : round(current, 0),
+                'pct'      : round(pct_trade, 2),
+                'lai_lo'   : round(current - von_vao, 0),
+                'von_sau'  : round(current, 0),
+                'dang_giu' : True,
             })
 
     return {
@@ -305,6 +285,7 @@ def run_backtest(symbol, initial_capital=50_000_000, vol_pct=None, trend_n=None)
         'trades'     : trades,
         'vol_pct'    : vol_pct,
         'trend_n'    : trend_n,
+        'stop_pct'   : stop_pct,
     }
 
 # -------------------- Dinh dang ket qua --------------------
@@ -315,7 +296,8 @@ def format_result(r):
     tong = (
         '<b>BACKTEST ' + r['symbol'] + '</b>\n'
         'Vol > ' + str(r['vol_pct']) + '% MA20 | '
-        'Trend SMA ' + str(r['trend_n']) + ' phien\n' +
+        'Trend ' + str(r['trend_n']) + ' phien | '
+        'Stop ' + str(r['stop_pct']) + '%\n' +
         SEP + '\n'
         'Von ban dau : ' + f"{r['von_ban_dau']:,.0f}" + 'd\n'
         'Von cuoi    : ' + f"{r['von_cuoi']:,.0f}" + 'd\n'
@@ -352,10 +334,12 @@ async def handle_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '<b>Tham so hien tai:</b>\n' +
         SEP + '\n'
         'Volume    : > ' + str(CONFIG['vol_pct']) + '% MA20\n'
-        'Trend SMA : tang/ngang ' + str(CONFIG['trend_n']) + ' phien lien tiep\n\n'
+        'Trend SMA : tang/ngang ' + str(CONFIG['trend_n']) + ' phien lien tiep\n'
+        'Stop      : ' + str(CONFIG['stop_pct']) + '% tu dinh\n\n'
         'Thay doi:\n'
-        '  /set vol 150   -> Volume > 150% MA20\n'
-        '  /set trend 3   -> SMA tang trong 3 phien',
+        '  /set vol [so]   -> Volume % MA20\n'
+        '  /set trend [so] -> So phien xu huong\n'
+        '  /set stop [so]  -> % trailing stop',
         parse_mode='HTML'
     )
 
@@ -365,40 +349,43 @@ async def handle_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(args) != 2:
         await update.message.reply_text(
             'Cu phap: /set [tham so] [gia tri]\n'
-            'Vi du  : /set vol 150\n'
-            '         /set trend 3'
+            'Vi du  :\n'
+            '  /set vol 150   -> Volume > 150% MA20\n'
+            '  /set trend 3   -> SMA tang trong 3 phien\n'
+            '  /set stop 15   -> Trailing stop 15%'
         )
         return
 
     key, val_str = args[0].lower(), args[1]
     try:
-        val = int(val_str)
+        val = float(val_str)
     except ValueError:
-        await update.message.reply_text('Gia tri phai la so nguyen.')
+        await update.message.reply_text('Gia tri phai la so.')
         return
 
     if key == 'vol':
         if val < 100 or val > 500:
             await update.message.reply_text('Vol phai tu 100 den 500 (%).')
             return
-        CONFIG['vol_pct'] = val
-        await update.message.reply_text(
-            'Da cap nhat: Volume > ' + str(val) + '% MA20',
-            parse_mode='HTML'
-        )
+        CONFIG['vol_pct'] = int(val)
+        await update.message.reply_text('Da cap nhat: Volume > ' + str(int(val)) + '% MA20')
+
     elif key == 'trend':
         if val < 1 or val > 10:
             await update.message.reply_text('Trend phai tu 1 den 10 (phien).')
             return
-        CONFIG['trend_n'] = val
-        await update.message.reply_text(
-            'Da cap nhat: SMA(RSI) tang/ngang ' + str(val) + ' phien lien tiep',
-            parse_mode='HTML'
-        )
+        CONFIG['trend_n'] = int(val)
+        await update.message.reply_text('Da cap nhat: SMA(RSI) tang/ngang ' + str(int(val)) + ' phien')
+
+    elif key == 'stop':
+        if val < 1 or val > 50:
+            await update.message.reply_text('Stop phai tu 1 den 50 (%).')
+            return
+        CONFIG['stop_pct'] = val
+        await update.message.reply_text('Da cap nhat: Trailing stop ' + str(val) + '% tu dinh')
+
     else:
-        await update.message.reply_text(
-            'Tham so khong hop le. Dung: vol hoac trend'
-        )
+        await update.message.reply_text('Tham so khong hop le. Dung: vol, trend, hoac stop')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
@@ -406,7 +393,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not (2 <= len(text) <= 5 and text.isalpha()):
         await update.message.reply_text(
             'Nhap ma co phieu (VD: VCB)\n'
-            'Hoac dung lenh:\n'
+            'Hoac lenh:\n'
             '  /scanall : quet toan bo\n'
             '  /config  : xem tham so\n'
             '  /set     : chinh tham so'
@@ -415,7 +402,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         '<b>Dang chay backtest cho ' + text + '...</b>\n'
         'Vol > ' + str(CONFIG['vol_pct']) + '% MA20 | '
-        'Trend ' + str(CONFIG['trend_n']) + ' phien',
+        'Trend ' + str(CONFIG['trend_n']) + ' phien | '
+        'Stop ' + str(CONFIG['stop_pct']) + '%',
         parse_mode='HTML'
     )
     result = run_backtest(text)
@@ -433,8 +421,9 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=(
             '<b>Bat dau scan ' + str(total) + ' ma...</b>\n'
             'Vol > ' + str(CONFIG['vol_pct']) + '% MA20 | '
-            'Trend ' + str(CONFIG['trend_n']) + ' phien\n'
-            'Uoc tinh 15-30 phut, se bao cao khi xong.'
+            'Trend ' + str(CONFIG['trend_n']) + ' phien | '
+            'Stop ' + str(CONFIG['stop_pct']) + '%\n'
+            'Uoc tinh 15-30 phut...'
         ),
         parse_mode='HTML'
     )
@@ -469,7 +458,6 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     df_r  = pd.DataFrame(results)
     df_gd = df_r[df_r['so_gd'] > 0]
     n_gd  = len(df_gd)
-
     if n_gd == 0:
         await context.bot.send_message(chat_id=chat_id, text='Khong co ma nao co giao dich.')
         return
@@ -478,13 +466,14 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     n_hoa   = len(df_gd[df_gd['pct'] == 0])
     n_lo    = len(df_gd[df_gd['pct'] < 0])
     n_ko_gd = len(df_r[df_r['so_gd'] == 0])
-
     tong_ll = df_gd['lai_lo'].sum()
     tb_pct  = df_gd['pct'].mean()
 
     msg_tk = (
         '<b>KET QUA SCAN TOAN BO</b>\n'
-        'Vol > ' + str(CONFIG['vol_pct']) + '% MA20 | Trend ' + str(CONFIG['trend_n']) + ' phien\n' +
+        'Vol > ' + str(CONFIG['vol_pct']) + '% | '
+        'Trend ' + str(CONFIG['trend_n']) + ' phien | '
+        'Stop ' + str(CONFIG['stop_pct']) + '%\n' +
         SEP + '\n'
         'Tong ma test    : ' + str(len(df_r)) + '\n'
         'Co giao dich    : ' + str(n_gd) + '\n'
@@ -499,8 +488,7 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'Tong lai/lo    : ' + f"{tong_ll:+,.0f}" + 'd\n'
         'TB lai/lo/ma   : ' + f"{tong_ll/n_gd:+,.0f}" + 'd\n'
         'TB % moi ma    : ' + f"{tb_pct:+.2f}" + '%\n'
-        '(Moi ma von 50,000,000d)\n' +
-        SEP
+        '(Moi ma von 50,000,000d)\n' + SEP
     )
     await context.bot.send_message(chat_id=chat_id, text=msg_tk, parse_mode='HTML')
 
@@ -524,12 +512,10 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # -------------------- Tu tat sau 30 phut --------------------
 async def watchdog(app):
-    """Kiem tra moi 60 giay, tu tat neu khong hoat dong 30 phut"""
-    timeout = 30 * 60  # 30 phut
+    timeout = 30 * 60
     while True:
         await asyncio.sleep(60)
-        idle = time.time() - last_activity[0]
-        if idle >= timeout:
+        if time.time() - last_activity[0] >= timeout:
             await app.bot.send_message(
                 chat_id=CHAT_ID,
                 text='Bot tu tat sau 30 phut khong hoat dong.'
@@ -547,13 +533,16 @@ async def post_init(app):
             'Lenh:\n'
             '  [MA]     : backtest 1 ma (VD: VCB)\n'
             '  /scanall : quet toan bo\n'
-            '  /config  : xem tham so hien tai\n'
-            '  /set vol [so]   : doi nguong volume\n'
-            '  /set trend [so] : doi so phien xu huong\n\n'
-            'Tham so mac dinh:\n'
+            '  /config  : xem tham so hien tai\n\n'
+            'Chinh tham so:\n'
+            '  /set vol [so]   : Volume % MA20\n'
+            '  /set trend [so] : So phien xu huong SMA\n'
+            '  /set stop [so]  : % trailing stop\n\n'
+            'Mac dinh:\n'
             '  Vol > ' + str(CONFIG['vol_pct']) + '% MA20\n'
-            '  Trend SMA: ' + str(CONFIG['trend_n']) + ' phien\n'
-            '  Von: 50,000,000d | Tu 2023\n\n'
+            '  Trend: ' + str(CONFIG['trend_n']) + ' phien\n'
+            '  Stop : ' + str(CONFIG['stop_pct']) + '%\n'
+            '  Von  : 50,000,000d | Tu 2023\n\n'
             'Tu tat sau 30 phut khong hoat dong.'
         ),
         parse_mode='HTML'
