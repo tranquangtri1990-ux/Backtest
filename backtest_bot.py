@@ -47,12 +47,11 @@ last_activity = [time.time()]
 def update_activity():
     last_activity[0] = time.time()
 
-# -------------------- Rate limit (dung chung cho thread pool) --------------------
+# -------------------- Rate limit --------------------
 _last_call = [0.0]
 _lock = threading.Lock()
 
 def rate_limited_sleep():
-    """Dam bao tong rate <= 60 req/phut = 1 req/giay"""
     with _lock:
         now  = time.time()
         wait = 1.0 - (now - _last_call[0])
@@ -173,8 +172,8 @@ def run_backtest(symbol, initial_capital=50_000_000,
     day_idx  = 0
 
     def do_sell(buy_date, buy_price, sell_date, sell_price, peak, von_vao):
-        pct   = (sell_price - buy_price) / buy_price * 100
-        cap   = von_vao * (1 + pct / 100)
+        pct = (sell_price - buy_price) / buy_price * 100
+        cap = von_vao * (1 + pct / 100)
         return {
             'stt'      : len(trades) + 1,
             'loai'     : 'Ban',
@@ -253,11 +252,11 @@ def run_backtest(symbol, initial_capital=50_000_000,
 
         if position is not None:
             last_ts, last_row = daily_list[-1]
-            lc        = last_row['Close']
-            pct       = (lc - position['buy_price']) / position['buy_price'] * 100
-            von_vao   = position['cost']
-            current   = von_vao * (1 + pct / 100)
-            capital   = current
+            lc      = last_row['Close']
+            pct     = (lc - position['buy_price']) / position['buy_price'] * 100
+            von_vao = position['cost']
+            current = von_vao * (1 + pct / 100)
+            capital = current
             trades.append({
                 'stt': len(trades)+1, 'loai': 'Dang giu',
                 'ngay_mua': position['buy_date'].strftime('%Y-%m-%d'),
@@ -286,9 +285,7 @@ def format_result(r):
     msgs = []
     tong = (
         '<b>BACKTEST ' + r['symbol'] + '</b>\n'
-        'Vol > ' + str(r['vol_pct']) + '% | '
-        'Trend ' + str(r['trend_n']) + 'p | '
-        'Stop ' + str(r['stop_pct']) + '%\n' +
+        'Vol>' + str(r['vol_pct']) + '% | Trend ' + str(r['trend_n']) + 'p | Stop ' + str(r['stop_pct']) + '%\n' +
         SEP + '\n'
         'Von ban dau : ' + f"{r['von_ban_dau']:,.0f}" + 'd\n'
         'Von cuoi    : ' + f"{r['von_cuoi']:,.0f}" + 'd\n'
@@ -374,16 +371,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
     text = update.message.text.strip().upper()
     if not (2 <= len(text) <= 5 and text.isalpha()):
-        await update.message.reply_text(
-            'Nhap ma co phieu (VD: VCB)\n'
-            '/scanall /config /set'
-        )
+        await update.message.reply_text('Nhap ma co phieu (VD: VCB)\n/scanall /config /set')
         return
     await update.message.reply_text(
         '<b>Dang chay backtest ' + text + '...</b>\n'
-        'Vol>' + str(CONFIG['vol_pct']) + '% | '
-        'Trend ' + str(CONFIG['trend_n']) + 'p | '
-        'Stop ' + str(CONFIG['stop_pct']) + '%',
+        'Vol>' + str(CONFIG['vol_pct']) + '% | Trend ' + str(CONFIG['trend_n']) + 'p | Stop ' + str(CONFIG['stop_pct']) + '%',
         parse_mode='HTML'
     )
     result = run_backtest(text)
@@ -392,22 +384,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
-    symbols = get_all_symbols()
-    total   = len(symbols)
-    chat_id = update.effective_chat.id
-
+    symbols  = get_all_symbols()
+    total    = len(symbols)
+    chat_id  = update.effective_chat.id
     vol_pct  = CONFIG['vol_pct']
     trend_n  = CONFIG['trend_n']
     stop_pct = CONFIG['stop_pct']
 
     await context.bot.send_message(
-        chat_id=chat_id,
+        chat_id=chat_id, parse_mode='HTML',
         text=(
             '<b>Bat dau scan ' + str(total) + ' ma (song song)...</b>\n'
-            'Vol > ' + str(vol_pct) + '% | Trend ' + str(trend_n) + 'p | Stop ' + str(stop_pct) + '%\n'
+            'Vol>' + str(vol_pct) + '% | Trend ' + str(trend_n) + 'p | Stop ' + str(stop_pct) + '%\n'
             'Uoc tinh ~' + str(round(total / 60)) + ' phut...'
-        ),
-        parse_mode='HTML'
+        )
     )
 
     results = []
@@ -425,9 +415,6 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 errors.append(sym)
         return done[0]
-
-    # Dung loop de gui tien do ma khong block thread pool
-    loop = asyncio.get_event_loop()
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(backtest_one, sym): sym for sym in symbols}
@@ -491,8 +478,20 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_lo += row['symbol'] + ': ' + f"{row['pct']:+.2f}" + '% | ' + f"{row['lai_lo']:+,.0f}" + 'd | ' + str(int(row['so_gd'])) + ' GD\n'
     await context.bot.send_message(chat_id=chat_id, text=msg_lo, parse_mode='HTML')
 
-    df_r.sort_values('pct', ascending=False).to_csv('ket_qua_scanall.csv', index=False)
-    await context.bot.send_message(chat_id=chat_id, text='Da luu: ket_qua_scanall.csv')
+    # Luu CSV va bao dia chi file
+    timestamp  = datetime.now(VN_TZ).strftime('%Y%m%d_%H%M')
+    csv_name   = 'ket_qua_scanall_' + timestamp + '.csv'
+    csv_path   = os.path.abspath(csv_name)
+    df_r.sort_values('pct', ascending=False).to_csv(csv_name, index=False)
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            'Da luu file CSV:\n'
+            'Ten file: ' + csv_name + '\n'
+            'Duong dan: ' + csv_path
+        )
+    )
 
 # -------------------- Tu tat --------------------
 async def watchdog(app):
