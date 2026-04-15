@@ -2,9 +2,9 @@
 # BACKTEST BOT - TELEGRAM
 # Lenh:
 #   [MA]            : backtest 1 ma
-#   /scanall        : quet toan bo (song song, ~12 phut)
+#   /scanall        : quet toan bo (song song)
 #   /config         : xem tham so
-#   /set vol [so]   : volume % MA20     (50-200, mac dinh 120)
+#   /set vol [so]   : volume % MA20     (10-200, mac dinh 120)
 #   /set trend [so] : so phien xu huong (1-10,  mac dinh 1)
 #   /set stop [so]  : trailing stop %   (1-50,  mac dinh 10)
 # Tu tat sau 30 phut khong hoat dong
@@ -318,7 +318,7 @@ async def handle_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
     await update.message.reply_text(
         '<b>Tham so hien tai:</b>\n' + SEP + '\n'
-        'Volume : > ' + str(CONFIG['vol_pct']) + '% MA20  (50-200)\n'
+        'Volume : > ' + str(CONFIG['vol_pct']) + '% MA20  (10-200)\n'
         'Trend  : ' + str(CONFIG['trend_n']) + ' phien        (1-10)\n'
         'Stop   : ' + str(CONFIG['stop_pct']) + '%            (1-50)\n\n'
         'Thay doi:\n'
@@ -347,8 +347,8 @@ async def handle_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if key == 'vol':
-        if not (50 <= val <= 200):
-            await update.message.reply_text('Vol phai tu 50 den 200 (%).')
+        if not (10 <= val <= 200):
+            await update.message.reply_text('Vol phai tu 10 den 200 (%).')
             return
         CONFIG['vol_pct'] = int(val)
         await update.message.reply_text('Da cap nhat: Volume > ' + str(int(val)) + '% MA20')
@@ -478,19 +478,14 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_lo += row['symbol'] + ': ' + f"{row['pct']:+.2f}" + '% | ' + f"{row['lai_lo']:+,.0f}" + 'd | ' + str(int(row['so_gd'])) + ' GD\n'
     await context.bot.send_message(chat_id=chat_id, text=msg_lo, parse_mode='HTML')
 
-    # Luu CSV va bao dia chi file
-    timestamp  = datetime.now(VN_TZ).strftime('%Y%m%d_%H%M')
-    csv_name   = 'ket_qua_scanall_' + timestamp + '.csv'
-    csv_path   = os.path.abspath(csv_name)
+    timestamp = datetime.now(VN_TZ).strftime('%Y%m%d_%H%M')
+    csv_name  = 'ket_qua_scanall_' + timestamp + '.csv'
+    csv_path  = os.path.abspath(csv_name)
     df_r.sort_values('pct', ascending=False).to_csv(csv_name, index=False)
 
     await context.bot.send_message(
         chat_id=chat_id,
-        text=(
-            'Da luu file CSV:\n'
-            'Ten file: ' + csv_name + '\n'
-            'Duong dan: ' + csv_path
-        )
+        text='Da luu file CSV:\n' + csv_name + '\n' + csv_path
     )
 
 # -------------------- Tu tat --------------------
@@ -510,16 +505,15 @@ async def post_init(app):
             '<b>Bot Backtest san sang!</b>\n' + SEP + '\n'
             'Lenh:\n'
             '  [MA]     : backtest 1 ma\n'
-            '  /scanall : quet toan bo (song song)\n'
+            '  /scanall : quet toan bo\n'
             '  /config  : xem tham so\n\n'
             'Chinh tham so:\n'
-            '  /set vol [50-200]  : % volume\n'
+            '  /set vol [10-200]  : % volume\n'
             '  /set trend [1-10]  : so phien SMA\n'
             '  /set stop [1-50]   : % trailing stop\n\n'
             'Mac dinh: Vol>' + str(CONFIG['vol_pct']) + '% | Trend ' +
             str(CONFIG['trend_n']) + 'p | Stop ' + str(CONFIG['stop_pct']) + '%\n'
-            'Von: 50tr/ma | Tu 2023\n'
-            'Tu tat sau 30 phut.'
+            'Von: 50tr/ma | Tu 2023 | Tu tat sau 30p.'
         )
     )
     asyncio.create_task(watchdog(app))
