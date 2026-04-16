@@ -30,7 +30,7 @@ CHAT_ID = '7000478479'
 API_KEY = 'vnstock_92c86f761ec105508ba230ede06850c7'
 VN_TZ   = timezone(timedelta(hours=7))
 
-os.environ['VNSTOCK_API_KEY'] = API_KEY
+# API key duoc truyen truc tiep vao Vnstock(api_key=...) thay vi env
 logging.basicConfig(level=logging.INFO)
 
 SEP = '-' * 35
@@ -47,15 +47,17 @@ last_activity = [time.time()]
 def update_activity():
     last_activity[0] = time.time()
 
-# -------------------- Rate limit --------------------
-_last_call = [0.0]
-_lock = threading.Lock()
+# -------------------- Rate limit (Token Bucket - Bronze 180 req/phut) --------------------
+_RATE_LIMIT   = 160       # de du 160/phut (an toan duoi muc 180)
+_MIN_INTERVAL = 60.0 / _RATE_LIMIT   # ~0.375 giay/request
+_last_call    = [0.0]
+_lock         = threading.Lock()
 
 def rate_limited_sleep():
-    """Gioi han 180 req/phut = 3 req/giay (goi Bronze)"""
+    """Token bucket: toi da 160 req/phut, an toan cho goi Bronze 180/phut"""
     with _lock:
         now  = time.time()
-        wait = (1.0 / 3) - (now - _last_call[0])
+        wait = _MIN_INTERVAL - (now - _last_call[0])
         if wait > 0:
             time.sleep(wait)
         _last_call[0] = time.time()
@@ -76,7 +78,7 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
 def _fetch_df(symbol, source):
     """Lay raw daily DataFrame tu mot source cu the. Tra ve None neu that bai."""
     from vnstock import Vnstock
-    stock = Vnstock().stock(symbol=symbol, source=source)
+    stock = Vnstock(api_key=API_KEY).stock(symbol=symbol, source=source)
     end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
     raw = stock.quote.history(start='2022-01-01', end=end, interval='1D')
 
@@ -117,8 +119,17 @@ def get_data(symbol):
             err = str(e)
             logging.warning('[get_data] %s / %s: %s', symbol, source, err)
             last_errors.append(source + ':' + err[:120])
-            if any(k in err.lower() for k in ['rate limit', '429', 'too many']):
-                time.sleep(15)
+            if any(k in err.lower() for k in ['rate limit', '429', 'too many', 'exceeded']):
+                logging.warning('[rate limit] sleeping 60s...')
+                time.sleep(60)
+                # Retry chinh source nay them 1 lan
+                try:
+                    df2 = _fetch_df(symbol, source)
+                    if df2 is not None:
+                        weekly = df2.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
+                        return df2, weekly
+                except Exception:
+                    pass
             continue
     logging.warning('[get_data] %s failed: %s', symbol, ' | '.join(last_errors))
     return None, last_errors
@@ -431,7 +442,7 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 errors.append(sym)
 
-    with ThreadPoolExecutor(max_workers=9) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(backtest_one, sym): sym for sym in symbols}
         for future in as_completed(futures):
             future.result()
