@@ -1,5 +1,5 @@
 # ============================================================
-# BACKTEST BOT - TELEGRAM (FIXED FOR BRONZE & VNSTOCK3)
+# BACKTEST BOT - TELEGRAM (OPTIMIZED FOR BRONZE & VNSTOCK3)
 # ============================================================
 
 import os
@@ -10,19 +10,18 @@ import pandas as pd
 import numpy as np
 import time
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     filters, ContextTypes
 )
 
-# Thử import vnstock3
+# Import thư viện vnstock3
 try:
     from vnstock3 import Vnstock
 except ImportError:
-    print("Vui long chay: pip install vnstock3")
-    raise
+    # Fallback dự phòng
+    from vnstock import Vnstock
 
 TOKEN   = '8578016275:AAGvL6SoOO3Yifqner8EcynwKt7OKgwl_J0'
 CHAT_ID = '7000478479'
@@ -32,7 +31,7 @@ VN_TZ   = timezone(timedelta(hours=7))
 logging.basicConfig(level=logging.INFO)
 SEP = '-' * 35
 
-# -------------------- Tham so --------------------
+# -------------------- Tham số mặc định --------------------
 CONFIG = {
     'vol_pct' : 120,
     'trend_n' : 1,
@@ -44,50 +43,21 @@ last_activity = [time.time()]
 def update_activity():
     last_activity[0] = time.time()
 
-# -------------------- Khoi tao Vnstock Bronze --------------------
+# -------------------- Khởi tạo Vnstock Bronze --------------------
 try:
-    # Khoi tao engine duy nhat dung chung cho toan bot
+    # Sử dụng vnstock3 config cho Bronze
     vstock = Vnstock().config(api_key=API_KEY)
-except Exception as e:
-    logging.error(f"Loi cau hinh API Key: {e}")
+except:
     vstock = Vnstock()
 
-# -------------------- Rate limit cho goi Bronze --------------------
-_last_call = [0.0]
-_lock = threading.Lock()
-
-def rate_limited_sleep():
-    with _lock:
-        now  = time.time()
-        # 0.25s = 4 req/s = 240 req/min (An toan cho Bronze)
-        wait = 0.25 - (now - _last_call[0])
-        if wait > 0:
-            time.sleep(wait)
-        _last_call[0] = time.time()
-
-# -------------------- Lay danh sach ma --------------------
-def get_all_symbols(filename='vn_stocks_full.txt'):
-    try:
-        if os.path.exists(filename):
-            with open(filename, 'r', encoding='utf-8') as f:
-                raw = [line.strip() for line in f if line.strip()]
-            symbols = [s for s in raw if 2 <= len(s) <= 5 and s.isalpha()]
-            return [s for s in dict.fromkeys(symbols)]
-        else:
-            # Neu ko co file thi lay tu san chung khoan
-            df = vstock.stock_listing()
-            return df['ticker'].tolist()
-    except:
-        return ['ACB', 'SSI', 'FPT', 'TCB', 'VND', 'MWG', 'HPG', 'VIC']
-
-# -------------------- Lay du lieu va Xu ly --------------------
+# -------------------- Hàm lấy dữ liệu (Sửa lỗi triệt để) --------------------
 def get_data(symbol):
-    rate_limited_sleep()
     try:
+        # Gói Bronze hỗ trợ lấy dữ liệu từ lâu, ta lấy từ 2022 để tính MA20 tuần
         end_date = datetime.now(VN_TZ).strftime('%Y-%m-%d')
         start_date = '2022-01-01'
         
-        # Dung ham price.history cua vnstock3
+        # Sử dụng hàm chuẩn của vnstock3
         df = vstock.stock_historical_data(
             symbol=symbol, 
             start_date=start_date, 
@@ -97,45 +67,44 @@ def get_data(symbol):
         )
         
         if df is None or df.empty:
-            logging.warning(f"API tra ve rong cho ma: {symbol}")
             return None, None
 
-        # Chuan hoa ten cot (vnstock3 thuong tra ve chu thuong)
+        # Chuẩn hóa cột về chữ thường để tránh lỗi giữa các phiên bản vnstock
         df.columns = [c.lower() for c in df.columns]
         
-        # Xu ly index thoi gian
-        if 'time' in df.columns:
-            df['time'] = pd.to_datetime(df['time'])
-            df = df.set_index('time')
-        elif 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.set_index('date')
+        # Xử lý cột thời gian thành Index
+        time_col = 'time' if 'time' in df.columns else 'date'
+        if time_col in df.columns:
+            df[time_col] = pd.to_datetime(df[time_col])
+            df = df.set_index(time_col)
             
-        # Mapping cot de logic backtest chay dung
+        # Mapping lại các cột cần thiết cho logic backtest
         df = df.rename(columns={
-            'close': 'Close', 'high': 'High', 'low': 'Low', 
-            'volume': 'Volume', 'open': 'Open'
+            'close': 'Close', 
+            'high': 'High', 
+            'low': 'Low', 
+            'volume': 'Volume'
         })
         
         df = df.sort_index().dropna(subset=['Close', 'Volume'])
         
-        # Tao nen tuan
+        # Tạo nến tuần (W-FRI: Kết tuần vào thứ 6)
         weekly = df.resample('W-FRI').agg({
             'Close': 'last', 
-            'Volume': 'sum',
-            'High': 'max',
+            'Volume': 'sum', 
+            'High': 'max', 
             'Low': 'min'
         }).dropna()
         
-        if len(weekly) < 25: # Can it nhat 20 phien cho MA20 tuan
+        if len(weekly) < 25: # Cần tối thiểu dữ liệu để tính RSI/MA20
             return None, None
             
         return df, weekly
     except Exception as e:
-        logging.error(f"Loi truy xuat {symbol}: {e}")
+        logging.error(f"Lỗi truy xuất {symbol}: {e}")
         return None, None
 
-# -------------------- Chi bao ky thuat --------------------
+# -------------------- Chỉ báo kỹ thuật --------------------
 def smma(series, period):
     values = series.values.astype(float)
     result = np.full(len(values), np.nan)
@@ -146,194 +115,157 @@ def smma(series, period):
             if count == period:
                 start = i
                 break
-        else:
-            count = 0
     if start == -1: return pd.Series(result, index=series.index)
     result[start] = np.mean(values[start - period + 1: start + 1])
     for i in range(start + 1, len(values)):
         result[i] = (result[i-1] * (period-1) + values[i]) / period
     return pd.Series(result, index=series.index)
 
-def calc_weekly_indicators(weekly):
+def calc_indicators(weekly):
     df = weekly.copy()
+    # MA20 Volume tuần
     df['ma20_vol'] = df['Volume'].rolling(20).mean()
-    delta          = df['Close'].diff()
-    avg_gain       = smma(delta.where(delta > 0, 0.0), 14)
-    avg_loss       = smma((-delta).where(delta < 0, 0.0), 14).replace(0, 0.0001)
-    df['rsi']      = 100 - (100 / (1 + avg_gain / avg_loss))
-    df['sma_rsi']  = df['rsi'].rolling(14).mean()
+    # RSI 14 tuần
+    delta = df['Close'].diff()
+    avg_gain = smma(delta.where(delta > 0, 0.0), 14)
+    avg_loss = smma((-delta).where(delta < 0, 0.0), 14).replace(0, 0.0001)
+    df['rsi'] = 100 - (100 / (1 + avg_gain / avg_loss))
+    # SMA 14 của RSI
+    df['sma_rsi'] = df['rsi'].rolling(14).mean()
     return df
 
-def check_buy_signal(df_w, i, vol_pct, trend_n):
-    if i < max(1, trend_n + 1): return False
-    row  = df_w.iloc[i]
-    prev = df_w.iloc[i - 1]
+def check_buy(df_w, i):
+    if i < CONFIG['trend_n'] + 1: return False
+    row = df_w.iloc[i]
+    prev = df_w.iloc[i-1]
     
     if any(pd.isna(x) for x in [row['Volume'], row['ma20_vol'], row['rsi'], row['sma_rsi']]):
         return False
         
-    dk1 = row['Volume'] > (vol_pct / 100) * row['ma20_vol']
-    dk2 = prev['rsi'] <= prev['sma_rsi'] and row['rsi'] > row['sma_rsi']
-    
-    # Kiem tra xu huong SMA RSI tang dan
-    dk3 = True
-    for k in range(trend_n):
-        idx = i - k
-        if df_w.iloc[idx]['sma_rsi'] < df_w.iloc[idx-1]['sma_rsi']:
-            dk3 = False
+    # Điều kiện 1: Volume vượt % so với trung bình
+    vol_ok = row['Volume'] > (CONFIG['vol_pct'] / 100) * row['ma20_vol']
+    # Điều kiện 2: RSI cắt lên SMA RSI
+    rsi_cross = prev['rsi'] <= prev['sma_rsi'] and row['rsi'] > row['sma_rsi']
+    # Điều kiện 3: Xu hướng SMA RSI đang tăng (Trend)
+    trend_ok = True
+    for k in range(CONFIG['trend_n']):
+        if df_w.iloc[i-k]['sma_rsi'] < df_w.iloc[i-k-1]['sma_rsi']:
+            trend_ok = False
             break
             
-    return dk1 and dk2 and dk3
+    return vol_ok and rsi_cross and trend_ok
 
-# -------------------- Backtest logic --------------------
-def run_backtest(symbol, initial_capital=50_000_000, vol_pct=None, trend_n=None, stop_pct=None):
-    if vol_pct is None: vol_pct = CONFIG['vol_pct']
-    if trend_n is None: trend_n = CONFIG['trend_n']
-    if stop_pct is None: stop_pct = CONFIG['stop_pct']
-
+# -------------------- Backtest Logic --------------------
+def run_backtest(symbol):
     daily, weekly = get_data(symbol)
     if daily is None or weekly is None:
-        return {'error': f'Khong lay duoc du lieu cho ma {symbol}'}
+        return {'error': f'Không lấy được dữ liệu cho mã {symbol}'}
 
-    df_w = calc_weekly_indicators(weekly)
+    df_w = calc_indicators(weekly)
+    # Chỉ backtest từ năm 2023
     df_w_bt = df_w[df_w.index >= '2023-01-01']
-    if df_w_bt.empty:
-        return {'error': 'Du lieu tu 2023 rong'}
+    if df_w_bt.empty: return {'error': 'Dữ liệu từ 2023 trống'}
 
-    stop_mult = 1 - stop_pct / 100
-    daily_list = list(daily[daily.index >= '2023-01-01'].iterrows())
-    
-    capital = initial_capital
+    capital = 50_000_000
     trades = []
-    position = None
-    day_idx = 0
+    pos = None
+    stop_mult = 1 - CONFIG['stop_pct'] / 100
+    daily_list = list(daily[daily.index >= '2023-01-01'].iterrows())
+    d_idx = 0
 
-    for wi, week_end in enumerate(df_w_bt.index):
-        global_wi = df_w.index.get_loc(week_end)
+    for wi, w_date in enumerate(df_w_bt.index):
+        g_idx = df_w.index.get_loc(w_date)
         
-        # Neu dang giu hang: Kiem tra trailing stop
-        if position:
-            sold = False
-            while day_idx < len(daily_list):
-                d_ts, d_row = daily_list[day_idx]
-                if d_ts > week_end: break
-                if d_ts <= position['buy_date']: 
-                    day_idx += 1
-                    continue
+        if pos: # Đang giữ hàng
+            while d_idx < len(daily_list):
+                dt, row = daily_list[d_idx]
+                if dt > w_date: break
+                if dt <= pos['d']: d_idx += 1; continue
                 
-                # Check stop loss
-                if d_row['Low'] <= position['peak'] * stop_mult:
-                    exit_price = position['peak'] * stop_mult
-                    pct = (exit_price - position['buy_price']) / position['buy_price'] * 100
-                    capital = position['cost'] * (1 + pct / 100)
+                # Check Trailing Stop
+                if row['Low'] <= pos['peak'] * stop_mult:
+                    price = pos['peak'] * stop_mult
+                    pct = (price - pos['p']) / pos['p'] * 100
+                    capital = pos['c'] * (1 + pct/100)
                     trades.append({
-                        'stt': len(trades)+1, 'loai': 'Ban', 'ngay_mua': position['buy_date'],
-                        'gia_mua': position['buy_price'], 'ngay_ban': d_ts.strftime('%Y-%m-%d'),
-                        'gia_ban': exit_price, 'pct': pct, 'von_sau': capital, 'dang_giu': False,
-                        'gia_dinh': position['peak'], 'von_dau': position['cost']
+                        'stt': len(trades)+1, 'type': 'Bán', 
+                        'd1': pos['d'].strftime('%Y-%m-%d'), 'p1': pos['p'], 
+                        'd2': dt.strftime('%Y-%m-%d'), 'p2': price, 
+                        'pct': pct, 'v2': capital
                     })
-                    position = None
-                    sold = True
-                    break
-                
-                if d_row['High'] > position['peak']: position['peak'] = d_row['High']
-                day_idx += 1
-            
-            if sold: continue
+                    pos = None; break
+                if row['High'] > pos['peak']: pos['peak'] = row['High']
+                d_idx += 1
+            if not pos: continue
 
-        # Check mua
-        if not position:
-            while day_idx < len(daily_list) and daily_list[day_idx][0] <= week_end:
-                day_idx += 1
-                
-            if check_buy_signal(df_w, global_wi, vol_pct, trend_n):
-                bp = df_w_bt.iloc[wi]['Close']
-                position = {'buy_date': week_end, 'buy_price': bp, 'peak': bp, 'cost': capital}
+        if not pos: # Tìm điểm mua
+            while d_idx < len(daily_list) and daily_list[d_idx][0] <= w_date: d_idx += 1
+            if check_buy(df_w, g_idx):
+                p = df_w_bt.iloc[wi]['Close']
+                pos = {'d': w_date, 'p': p, 'peak': p, 'c': capital}
 
-    # Chot trang thai cuoi cung
-    if position:
-        last_ts, last_row = daily_list[-1]
-        pct = (last_row['Close'] - position['buy_price']) / position['buy_price'] * 100
-        val = position['cost'] * (1 + pct/100)
+    # Nếu cuối kỳ vẫn đang giữ hàng
+    if pos:
+        last_dt, last_row = daily_list[-1]
+        pct = (last_row['Close'] - pos['p']) / pos['p'] * 100
+        capital_final = pos['c']*(1+pct/100)
         trades.append({
-            'stt': len(trades)+1, 'loai': 'Dang giu', 'ngay_mua': position['buy_date'],
-            'gia_mua': position['buy_price'], 'ngay_ban': last_ts.strftime('%Y-%m-%d'),
-            'gia_ban': last_row['Close'], 'pct': pct, 'von_sau': val, 'dang_giu': True,
-            'gia_dinh': position['peak'], 'von_dau': position['cost']
+            'stt': len(trades)+1, 'type': 'Giữ', 
+            'd1': pos['d'].strftime('%Y-%m-%d'), 'p1': pos['p'], 
+            'd2': last_dt.strftime('%Y-%m-%d'), 'p2': last_row['Close'], 
+            'pct': pct, 'v2': capital_final
         })
-        capital = val
+        capital = capital_final
 
     return {
-        'symbol': symbol, 'von_ban_dau': initial_capital, 'von_cuoi': capital,
-        'pct': (capital/initial_capital - 1)*100, 'trades': trades, 'so_gd': len(trades),
-        'vol_pct': vol_pct, 'trend_n': trend_n, 'stop_pct': stop_pct
+        'symbol': symbol.upper(), 
+        'cap': capital, 
+        'pct': (capital/50_000_000-1)*100, 
+        'trades': trades
     }
 
-# -------------------- Telegram Giao dien --------------------
-def format_result(r):
-    if 'error' in r: return [f"⚠️ {r['error']}"]
-    
-    header = (
-        f"<b>📊 BACKTEST: {r['symbol']}</b>\n"
-        f"<i>Cài đặt: Vol > {r['vol_pct']}% | Trend {r['trend_n']}p | Stop {r['stop_pct']}%</i>\n{SEP}\n"
-        f"Vốn đầu: {r['von_ban_dau']:,.0f}đ\n"
-        f"Vốn cuối: {r['von_cuoi']:,.0f}đ\n"
-        f"Lợi nhuận: {r['pct']:+.2f}%\n"
-        f"Số lệnh: {r['so_gd']}\n{SEP}"
-    )
-    
-    msgs = [header]
-    for t in r['trades']:
-        st = "🟢 MUA" if t['dang_giu'] else "🔴 BÁN"
-        m = (
-            f"<b>#{t['stt']} {st}</b>\n"
-            f"Mua: {t['ngay_mua'].strftime('%Y-%m-%d')} @ {t['gia_mua']:,.0f}\n"
-            f"Kết: {t['ngay_ban']} @ {t['gia_ban']:,.0f}\n"
-            f"Lãi: {t['pct']:+.2f}% | Vốn: {t['von_sau']:,.0f}đ"
-        )
-        msgs.append(m)
-    return msgs
-
+# -------------------- Telegram Handlers --------------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
     ticker = update.message.text.strip().upper()
     if not (2 <= len(ticker) <= 5): return
     
-    msg_wait = await update.message.reply_text(f"⏳ Đang tính toán cho {ticker}...")
+    await update.message.reply_text(f"⏳ Đang chạy backtest cho {ticker}...")
     res = run_backtest(ticker)
     
-    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_wait.message_id)
-    for part in format_result(res):
-        await update.message.reply_text(part, parse_mode='HTML')
-
-async def handle_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    update_activity()
-    text = (
-        f"⚙️ <b>THÔNG SỐ HIỆN TẠI</b>\n{SEP}\n"
-        f"1. Volume: >{CONFIG['vol_pct']}% MA20\n"
-        f"2. Trend: {CONFIG['trend_n']} phiên tăng\n"
-        f"3. Trailing Stop: {CONFIG['stop_pct']}%\n\n"
-        f"Dùng <code>/set [key] [giá trị]</code> để chỉnh."
+    if 'error' in res:
+        await update.message.reply_text(f"⚠️ {res['error']}")
+        return
+        
+    msg = (
+        f"<b>📊 KẾT QUẢ: {res['symbol']}</b>\n"
+        f"Lợi nhuận: {res['pct']:+.2f}%\n"
+        f"Vốn cuối: {res['cap']:,.0f}đ\n"
+        f"Cài đặt: Vol >{CONFIG['vol_pct']}% | Trend {CONFIG['trend_n']}p\n{SEP}\n"
     )
-    await update.message.reply_text(text, parse_mode='HTML')
+    for t in res['trades']:
+        icon = "🟢" if t['type'] == 'Giữ' else "🔴"
+        msg += f"{icon} #{t['stt']}: {t['pct']:+.1f}% ({t['p1']:,.0f} -> {t['p2']:,.0f})\n"
+        msg += f"   <i>({t['d1']} đến {t['d2']})</i>\n\n"
+        
+    await update.message.reply_text(msg, parse_mode='HTML')
 
 async def handle_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
     try:
-        key, val = context.args[0].lower(), float(context.args[1])
-        if key == 'vol': CONFIG['vol_pct'] = int(val)
-        elif key == 'trend': CONFIG['trend_n'] = int(val)
-        elif key == 'stop': CONFIG['stop_pct'] = val
-        await update.message.reply_text(f"✅ Đã cập nhật {key} = {val}")
+        k, v = context.args[0].lower(), float(context.args[1])
+        if k == 'vol': CONFIG['vol_pct'] = int(v)
+        elif k == 'trend': CONFIG['trend_n'] = int(v)
+        elif k == 'stop': CONFIG['stop_pct'] = v
+        await update.message.reply_text(f"✅ Đã cập nhật {k} = {v}")
     except:
-        await update.message.reply_text("Lỗi cú pháp. VD: /set vol 150")
+        await update.message.reply_text("Sai cú pháp. VD: /set vol 150")
 
 async def post_init(app):
-    await app.bot.send_message(chat_id=CHAT_ID, text="🚀 <b>Bot Bronze Sẵn Sàng!</b>\nNhập mã CP để bắt đầu.", parse_mode='HTML')
+    await app.bot.send_message(chat_id=CHAT_ID, text="🚀 <b>Bot Backtest Bronze Sẵn Sàng!</b>\nNhập mã CP để xem kết quả.", parse_mode='HTML')
 
 def main():
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler('config', handle_config))
     app.add_handler(CommandHandler('set', handle_set))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
