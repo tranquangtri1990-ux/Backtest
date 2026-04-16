@@ -1,5 +1,5 @@
 # ============================================================
-# BACKTEST BOT - TELEGRAM
+# BACKTEST BOT - TELEGRAM (Toi uu toc do - Bronze 180 req/phut)
 # Lenh:
 #   [MA]            : backtest 1 ma
 #   /scanall        : quet toan bo (song song)
@@ -12,7 +12,6 @@
 
 import os
 
-# ---- SET API KEY TRUOC KHI IMPORT VNSTOCK ----
 API_KEY = 'vnstock_b89d601e86a29649640f94ab0634433e'
 os.environ['VNSTOCK_API_KEY'] = API_KEY
 
@@ -30,15 +29,13 @@ from telegram.ext import (
     filters, ContextTypes
 )
 
-TOKEN   = '8578016275:AAGvL6SoOO3Yifqner8EcynwKt7OKgwl_J0'
+TOKEN   = '8578016275:AAGvL6SoOO3Yifqner8EcynwKl_J0'
 CHAT_ID = '7000478479'
 VN_TZ   = timezone(timedelta(hours=7))
 
 logging.basicConfig(level=logging.INFO)
-
 SEP = '-' * 35
 
-# -------------------- Tham so --------------------
 CONFIG = {
     'vol_pct' : 120,
     'trend_n' : 1,
@@ -50,22 +47,40 @@ last_activity = [time.time()]
 def update_activity():
     last_activity[0] = time.time()
 
-# -------------------- Rate limit (Token Bucket - Bronze 180 req/phut) --------------------
-_RATE_LIMIT   = 160       # de du 160/phut (an toan duoi muc 180)
-_MIN_INTERVAL = 60.0 / _RATE_LIMIT   # ~0.375 giay/request
-_last_call    = [0.0]
-_lock         = threading.Lock()
+# ============================================================
+# RATE LIMITER - Token Bucket chinh xac cho Bronze 180 req/phut
+# Su dung semaphore + sliding window de toi da hoa throughput
+# ============================================================
+class RateLimiter:
+    """
+    Token Bucket: cho phep toi da MAX_CALLS request trong PERIOD giay.
+    Thread-safe, khong block qua lau, phu hop voi ThreadPoolExecutor.
+    """
+    def __init__(self, max_calls: int = 170, period: float = 60.0):
+        self.max_calls = max_calls   # de du an toan duoi 180
+        self.period    = period
+        self._lock     = threading.Lock()
+        self._calls: list[float] = []  # timestamps cua cac call gan day
 
-def rate_limited_sleep():
-    """Token bucket: toi da 160 req/phut, an toan cho goi Bronze 180/phut"""
-    with _lock:
-        now  = time.time()
-        wait = _MIN_INTERVAL - (now - _last_call[0])
-        if wait > 0:
-            time.sleep(wait)
-        _last_call[0] = time.time()
+    def acquire(self):
+        """Block cho den khi co the thuc hien request tiep theo."""
+        while True:
+            with self._lock:
+                now = time.time()
+                # Xoa cac call da qua period
+                self._calls = [t for t in self._calls if now - t < self.period]
+                if len(self._calls) < self.max_calls:
+                    self._calls.append(now)
+                    return
+                # Tinh thoi gian cho: khi call cu nhat se het han
+                wait = self.period - (now - self._calls[0]) + 0.01
+            time.sleep(max(wait, 0.05))
 
-# -------------------- Doc danh sach ma --------------------
+_rate_limiter = RateLimiter(max_calls=170, period=60.0)
+
+# ============================================================
+# DOC DANH SACH MA
+# ============================================================
 def get_all_symbols(filename='vn_stocks_full.txt'):
     try:
         with open(filename, 'r', encoding='utf-8') as f:
@@ -77,20 +92,19 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
     except:
         return []
 
-# -------------------- Lay du lieu --------------------
+# ============================================================
+# LAY DU LIEU - Co retry thong minh
+# ============================================================
 def _fetch_df(symbol, source):
     """Lay raw daily DataFrame tu mot source cu the. Tra ve None neu that bai."""
     from vnstock import Vnstock
+    _rate_limiter.acquire()  # <-- acquire TRUOC moi API call
     stock = Vnstock(show_log=False).stock(symbol=symbol, source=source)
     end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
-    raw = stock.quote.history(start='2022-01-01', end=end, interval='1D')
+    raw   = stock.quote.history(start='2022-01-01', end=end, interval='1D')
 
-    # vnstock moi co the tra ve dict {'data': [...]} hoac DataFrame
     if isinstance(raw, dict):
-        if 'data' in raw:
-            df = pd.DataFrame(raw['data'])
-        else:
-            return None
+        df = pd.DataFrame(raw['data']) if 'data' in raw else None
     else:
         df = raw
 
@@ -103,18 +117,21 @@ def _fetch_df(symbol, source):
         df = df.set_index('time')
     elif df.index.dtype != 'datetime64[ns]':
         df.index = pd.to_datetime(df.index)
-    df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume'})
+
+    df = df.rename(columns={'close': 'Close', 'high': 'High',
+                             'low': 'Low',   'volume': 'Volume'})
     df = df.sort_index().dropna(subset=['Close', 'High', 'Low', 'Volume'])
     return df if not df.empty else None
 
 def get_data(symbol):
     last_errors = []
     for source in ('VCI', 'MSN', 'KBS'):
-        rate_limited_sleep()
         try:
             df = _fetch_df(symbol, source)
             if df is not None:
-                weekly = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
+                weekly = df.resample('W-FRI').agg(
+                    {'Close': 'last', 'Volume': 'sum'}
+                ).dropna()
                 return df, weekly
             else:
                 last_errors.append(source + ':empty')
@@ -123,21 +140,25 @@ def get_data(symbol):
             logging.warning('[get_data] %s / %s: %s', symbol, source, err)
             last_errors.append(source + ':' + err[:120])
             if any(k in err.lower() for k in ['rate limit', '429', 'too many', 'exceeded']):
-                logging.warning('[rate limit] sleeping 60s...')
-                time.sleep(60)
-                # Retry chinh source nay them 1 lan
+                logging.warning('[rate limit] sleeping 30s...')
+                time.sleep(30)
                 try:
                     df2 = _fetch_df(symbol, source)
                     if df2 is not None:
-                        weekly = df2.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
+                        weekly = df2.resample('W-FRI').agg(
+                            {'Close': 'last', 'Volume': 'sum'}
+                        ).dropna()
                         return df2, weekly
                 except Exception:
                     pass
             continue
+
     logging.warning('[get_data] %s failed: %s', symbol, ' | '.join(last_errors))
     return None, last_errors
 
-# -------------------- Chi bao --------------------
+# ============================================================
+# CHI BAO KY THUAT
+# ============================================================
 def smma(series, period):
     values = series.values.astype(float)
     result = np.full(len(values), np.nan)
@@ -154,17 +175,18 @@ def smma(series, period):
         return pd.Series(result, index=series.index)
     result[start] = np.mean(values[start - period + 1: start + 1])
     for i in range(start + 1, len(values)):
-        result[i] = result[i-1] if np.isnan(values[i]) else (result[i-1] * (period-1) + values[i]) / period
+        result[i] = (result[i-1] if np.isnan(values[i])
+                     else (result[i-1] * (period-1) + values[i]) / period)
     return pd.Series(result, index=series.index)
 
 def calc_weekly_indicators(weekly):
     df = weekly.copy()
     df['ma20_vol'] = df['Volume'].rolling(20).mean()
-    delta          = df['Close'].diff()
-    avg_gain       = smma(delta.where(delta > 0, 0.0), 14)
-    avg_loss       = smma((-delta).where(delta < 0, 0.0), 14)
-    df['rsi']      = 100 - (100 / (1 + avg_gain / avg_loss))
-    df['sma_rsi']  = df['rsi'].rolling(14).mean()
+    delta         = df['Close'].diff()
+    avg_gain      = smma(delta.where(delta > 0, 0.0), 14)
+    avg_loss      = smma((-delta).where(delta < 0, 0.0), 14)
+    df['rsi']     = 100 - (100 / (1 + avg_gain / avg_loss))
+    df['sma_rsi'] = df['rsi'].rolling(14).mean()
     return df
 
 def check_buy_signal(df_w, i, vol_pct, trend_n):
@@ -185,7 +207,9 @@ def check_buy_signal(df_w, i, vol_pct, trend_n):
     )
     return dk1 and dk2 and dk3
 
-# -------------------- Backtest 1 ma --------------------
+# ============================================================
+# BACKTEST 1 MA
+# ============================================================
 def run_backtest(symbol, initial_capital=50_000_000,
                  vol_pct=None, trend_n=None, stop_pct=None):
     if vol_pct  is None: vol_pct  = CONFIG['vol_pct']
@@ -319,7 +343,9 @@ def run_backtest(symbol, initial_capital=50_000_000,
         'vol_pct': vol_pct, 'trend_n': trend_n, 'stop_pct': stop_pct,
     }
 
-# -------------------- Dinh dang ket qua --------------------
+# ============================================================
+# DINH DANG KET QUA
+# ============================================================
 def format_result(r):
     if 'error' in r:
         return ['Loi: ' + r['error']]
@@ -354,7 +380,9 @@ def format_result(r):
         msgs.append('\n\n'.join(chunk))
     return msgs
 
-# -------------------- Handlers --------------------
+# ============================================================
+# HANDLERS
+# ============================================================
 async def handle_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
     await update.message.reply_text(
@@ -423,6 +451,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for msg in format_result(result):
         await update.message.reply_text(msg, parse_mode='HTML')
 
+# ============================================================
+# SCANALL - Song song + tien trinh chi tiet
+# max_workers=20: moi worker doi rate_limiter, dam bao khong qua 170/phut
+# ============================================================
+# Bao nhieu ma thi gui 1 tin tien trinh
+PROGRESS_INTERVAL = 50
+
 async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
     symbols  = get_all_symbols()
@@ -432,24 +467,97 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trend_n  = CONFIG['trend_n']
     stop_pct = CONFIG['stop_pct']
 
-    results = []
-    errors  = []
-    lock    = threading.Lock()
+    if total == 0:
+        await context.bot.send_message(chat_id=chat_id, text='Khong tim thay file vn_stocks_full.txt hoac file rong.')
+        return
+
+    start_time = time.time()
+    await context.bot.send_message(
+        chat_id=chat_id, parse_mode='HTML',
+        text=(
+            '<b>🔍 BAT DAU SCAN TOAN BO</b>\n' +
+            SEP + '\n'
+            'Tong so ma : <b>' + str(total) + '</b>\n'
+            'Vol>' + str(vol_pct) + '% | Trend ' + str(trend_n) + 'p | Stop ' + str(stop_pct) + '%\n'
+            'Workers    : 20 threads\n'
+            'Rate limit : 170 req/phut (Bronze)\n' +
+            SEP + '\n'
+            'Cap nhat moi ' + str(PROGRESS_INTERVAL) + ' ma...'
+        )
+    )
+
+    results  = []
+    errors   = []
+    done_cnt = [0]
+    lock     = threading.Lock()
+
+    # Bien de gui progress tu thread khac vao event loop chinh
+    progress_queue = asyncio.Queue()
 
     def backtest_one(sym):
         r = run_backtest(sym, vol_pct=vol_pct, trend_n=trend_n, stop_pct=stop_pct)
         with lock:
+            done_cnt[0] += 1
+            n = done_cnt[0]
             if 'error' not in r:
-                results.append({'symbol': sym, 'so_gd': r['so_gd'],
-                                 'pct': r['pct'], 'lai_lo': r['lai_lo']})
+                results.append({
+                    'symbol' : sym,
+                    'so_gd'  : r['so_gd'],
+                    'pct'    : r['pct'],
+                    'lai_lo' : r['lai_lo'],
+                })
             else:
                 errors.append(sym)
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(backtest_one, sym): sym for sym in symbols}
-        for future in as_completed(futures):
-            future.result()
+            # Gui progress moi PROGRESS_INTERVAL ma hoac ma cuoi cung
+            if n % PROGRESS_INTERVAL == 0 or n == total:
+                elapsed   = time.time() - start_time
+                remaining = (elapsed / n) * (total - n) if n > 0 else 0
+                ok_now    = len(results)
+                err_now   = len(errors)
+                speed     = n / elapsed * 60 if elapsed > 0 else 0
 
+                msg = (
+                    '📊 <b>TIEN TRINH SCAN</b>\n' +
+                    SEP + '\n'
+                    'Da xong : ' + str(n) + '/' + str(total) +
+                    ' (' + f"{n/total*100:.1f}" + '%)\n'
+                    '✅ OK   : ' + str(ok_now) + '\n'
+                    '❌ Loi  : ' + str(err_now) + '\n' +
+                    SEP + '\n'
+                    '⏱ Da chay  : ' + f"{elapsed:.0f}" + 's\n'
+                    '⏳ Con lai  : ~' + f"{remaining:.0f}" + 's\n'
+                    '🚀 Toc do  : ' + f"{speed:.0f}" + ' ma/phut'
+                )
+                # Put vao queue de gui trong event loop chinh
+                asyncio.run_coroutine_threadsafe(
+                    progress_queue.put(msg),
+                    asyncio.get_event_loop()
+                )
+
+    # Chay cac backtest song song trong thread pool
+    loop = asyncio.get_event_loop()
+
+    async def run_pool():
+        await loop.run_in_executor(
+            None,
+            lambda: _run_pool_sync(backtest_one, symbols)
+        )
+        await progress_queue.put(None)  # sentinel
+
+    async def send_progress():
+        while True:
+            msg = await progress_queue.get()
+            if msg is None:
+                break
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+            except Exception as e:
+                logging.warning('[progress] send failed: %s', e)
+
+    await asyncio.gather(run_pool(), send_progress())
+
+    # ---- Tong ket ----
     if not results:
         await context.bot.send_message(chat_id=chat_id, text='Khong co du lieu.')
         return
@@ -457,6 +565,7 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     df_r  = pd.DataFrame(results)
     df_gd = df_r[df_r['so_gd'] > 0]
     n_gd  = len(df_gd)
+
     if n_gd == 0:
         await context.bot.send_message(chat_id=chat_id, text='Khong co ma nao co giao dich.')
         return
@@ -468,17 +577,17 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tong_ll = df_gd['lai_lo'].sum()
     tb_pct  = df_gd['pct'].mean()
 
-    # Profit Factor = tong loi nhuan / tong lo (theo gia tri tuyet doi)
     tong_loi = df_gd.loc[df_gd['lai_lo'] > 0, 'lai_lo'].sum()
-    tong_lo  = df_gd.loc[df_gd['lai_lo'] < 0, 'lai_lo'].sum()
-    if tong_lo < 0:
-        profit_factor = tong_loi / abs(tong_lo)
-        pf_str = f"{profit_factor:.2f}"
+    tong_lo_v = df_gd.loc[df_gd['lai_lo'] < 0, 'lai_lo'].sum()
+    if tong_lo_v < 0:
+        pf_str = f"{tong_loi / abs(tong_lo_v):.2f}"
     else:
         pf_str = 'N/A (khong co ma lo)'
 
+    total_elapsed = time.time() - start_time
+
     await context.bot.send_message(chat_id=chat_id, parse_mode='HTML', text=(
-        '<b>KET QUA SCAN TOAN BO</b>\n'
+        '<b>✅ KET QUA SCAN TOAN BO</b>\n'
         'Vol>' + str(vol_pct) + '% | Trend ' + str(trend_n) + 'p | Stop ' + str(stop_pct) + '%\n' +
         SEP + '\n'
         'Tong ma test : ' + str(len(df_r)) + '\n'
@@ -487,45 +596,64 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'Loi DL       : ' + str(len(errors)) + '\n' +
         SEP + '\n'
         'Trong ' + str(n_gd) + ' ma co GD:\n'
-        '  Loi: ' + str(n_loi) + ' (' + str(round(n_loi/n_gd*100,1)) + '%)\n'
-        '  Hoa: ' + str(n_hoa) + ' (' + str(round(n_hoa/n_gd*100,1)) + '%)\n'
-        '  Lo : ' + str(n_lo)  + ' (' + str(round(n_lo /n_gd*100,1)) + '%)\n' +
+        '  Loi: ' + str(n_loi) + ' (' + str(round(n_loi/n_gd*100, 1)) + '%)\n'
+        '  Hoa: ' + str(n_hoa) + ' (' + str(round(n_hoa/n_gd*100, 1)) + '%)\n'
+        '  Lo : ' + str(n_lo)  + ' (' + str(round(n_lo /n_gd*100, 1)) + '%)\n' +
         SEP + '\n'
         'Tong lai/lo  : ' + f"{tong_ll:+,.0f}" + 'd\n'
         'TB/ma        : ' + f"{tong_ll/n_gd:+,.0f}" + 'd (' + f"{tb_pct:+.2f}" + '%)\n'
         'Profit Factor: ' + pf_str + '\n'
-        '(Moi ma von 50tr)\n' + SEP
+        '(Moi ma von 50tr)\n' +
+        SEP + '\n'
+        '⏱ Tong thoi gian: ' + f"{total_elapsed:.0f}" + 's\n'
+        '🚀 Toc do TB    : ' + f"{len(df_r)/total_elapsed*60:.0f}" + ' ma/phut'
     ))
 
     top_loi = df_gd.nlargest(5, 'pct')[['symbol', 'pct', 'lai_lo', 'so_gd']]
     top_lo  = df_gd.nsmallest(5, 'pct')[['symbol', 'pct', 'lai_lo', 'so_gd']]
 
-    msg_loi = '<b>TOP 5 LOI:</b>\n'
+    msg_loi = '<b>🏆 TOP 5 LOI:</b>\n'
     for _, row in top_loi.iterrows():
-        msg_loi += row['symbol'] + ': ' + f"{row['pct']:+.2f}" + '% | ' + f"{row['lai_lo']:+,.0f}" + 'd | ' + str(int(row['so_gd'])) + ' GD\n'
+        msg_loi += (row['symbol'] + ': ' + f"{row['pct']:+.2f}" + '% | '
+                    + f"{row['lai_lo']:+,.0f}" + 'd | ' + str(int(row['so_gd'])) + ' GD\n')
     await context.bot.send_message(chat_id=chat_id, text=msg_loi, parse_mode='HTML')
 
-    msg_lo = '<b>TOP 5 LO:</b>\n'
+    msg_lo = '<b>📉 TOP 5 LO:</b>\n'
     for _, row in top_lo.iterrows():
-        msg_lo += row['symbol'] + ': ' + f"{row['pct']:+.2f}" + '% | ' + f"{row['lai_lo']:+,.0f}" + 'd | ' + str(int(row['so_gd'])) + ' GD\n'
+        msg_lo += (row['symbol'] + ': ' + f"{row['pct']:+.2f}" + '% | '
+                   + f"{row['lai_lo']:+,.0f}" + 'd | ' + str(int(row['so_gd'])) + ' GD\n')
     await context.bot.send_message(chat_id=chat_id, text=msg_lo, parse_mode='HTML')
 
     timestamp = datetime.now(VN_TZ).strftime('%Y%m%d_%H%M')
     csv_name  = 'ket_qua_scanall_' + timestamp + '.csv'
     csv_path  = os.path.abspath(csv_name)
     df_r.sort_values('pct', ascending=False).to_csv(csv_name, index=False)
-
     await context.bot.send_message(
         chat_id=chat_id,
-        text='Da luu file CSV:\n' + csv_name + '\n' + csv_path
+        text='📁 Da luu CSV:\n' + csv_name + '\n' + csv_path
     )
 
-# -------------------- Tu tat --------------------
+def _run_pool_sync(fn, symbols):
+    """Chay ThreadPoolExecutor dong bo trong thread rieng."""
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(fn, sym): sym for sym in symbols}
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logging.error('[pool] unhandled: %s', e)
+
+# ============================================================
+# TU TAT
+# ============================================================
 async def watchdog(app):
     while True:
         await asyncio.sleep(60)
         if time.time() - last_activity[0] >= 1800:
-            await app.bot.send_message(chat_id=CHAT_ID, text='Bot tu tat sau 30 phut khong hoat dong.')
+            await app.bot.send_message(
+                chat_id=CHAT_ID,
+                text='Bot tu tat sau 30 phut khong hoat dong.'
+            )
             await app.stop()
             break
 
@@ -545,7 +673,8 @@ async def post_init(app):
             '  /set stop [1-50]   : % trailing stop\n\n'
             'Mac dinh: Vol>' + str(CONFIG['vol_pct']) + '% | Trend ' +
             str(CONFIG['trend_n']) + 'p | Stop ' + str(CONFIG['stop_pct']) + '%\n'
-            'Von: 50tr/ma | Tu 2023 | Tu tat sau 30p.'
+            'Von: 50tr/ma | Tu 2023 | Tu tat sau 30p.\n'
+            '⚡ Rate limit: 170 req/phut | 20 workers'
         )
     )
     asyncio.create_task(watchdog(app))
@@ -553,11 +682,4 @@ async def post_init(app):
 def main():
     app = (ApplicationBuilder().token(TOKEN).post_init(post_init).build())
     app.add_handler(CommandHandler('scanall', handle_scanall))
-    app.add_handler(CommandHandler('config',  handle_config))
-    app.add_handler(CommandHandler('set',     handle_set))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print('Bot dang chay...')
-    app.run_polling()
-
-if __name__ == '__main__':
-    main()
+    app.add_handler(CommandHandler('config',  handle
