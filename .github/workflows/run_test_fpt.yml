@@ -1,4 +1,4 @@
-name: Backtest FPT Only
+name: Backtest FPT
 
 on:
   workflow_dispatch:
@@ -7,13 +7,19 @@ jobs:
   run_test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
       - name: Install dependencies
         run: |
-          pip install pandas numpy vnstock3 requests
-      - name: Run Script
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests vnstock3
+
+      - name: Run Backtest FPT
+        # Đảm bảo lệnh này gọi đúng file python bạn đã tạo
         run: python backtest_fpt.py
