@@ -682,4 +682,11 @@ async def post_init(app):
 def main():
     app = (ApplicationBuilder().token(TOKEN).post_init(post_init).build())
     app.add_handler(CommandHandler('scanall', handle_scanall))
-    app.add_handler(CommandHandler('config',  handle
+    app.add_handler(CommandHandler('config',  handle_config))
+    app.add_handler(CommandHandler('set',     handle_set))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    print('Bot dang chay...')
+    app.run_polling()
+
+if __name__ == '__main__':
+    main()
