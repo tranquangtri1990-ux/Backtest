@@ -73,30 +73,39 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
         return []
 
 # -------------------- Lay du lieu --------------------
+def _fetch_df(symbol, source):
+    """Lay raw daily DataFrame tu mot source cu the. Tra ve None neu that bai."""
+    from vnstock import Vnstock
+    stock = Vnstock().stock(symbol=symbol, source=source)
+    end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
+    df = stock.quote.history(start='2022-01-01', end=end, interval='1D')
+    if df is None or df.empty:
+        return None
+    df.columns = [c.lower() for c in df.columns]
+    if 'time' in df.columns:
+        df['time'] = pd.to_datetime(df['time'])
+        df = df.set_index('time')
+    elif df.index.dtype != 'datetime64[ns]':
+        df.index = pd.to_datetime(df.index)
+    df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume'})
+    df = df.sort_index().dropna(subset=['Close', 'High', 'Low', 'Volume'])
+    return df if not df.empty else None
+
 def get_data(symbol):
-    rate_limited_sleep()
-    try:
-        from vnstock import Vnstock
-        stock = Vnstock().stock(symbol=symbol, source='VCI')
-        end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
-        df = stock.quote.history(start='2022-01-01', end=end, interval='1D')
-        if df is None or df.empty:
-            return None, None
-        df.columns = [c.lower() for c in df.columns]
-        if 'time' in df.columns:
-            df['time'] = pd.to_datetime(df['time'])
-            df = df.set_index('time')
-        elif df.index.dtype != 'datetime64[ns]':
-            df.index = pd.to_datetime(df.index)
-        df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume'})
-        df = df.sort_index().dropna(subset=['Close', 'High', 'Low', 'Volume'])
-        weekly = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
-        return df, weekly
-    except Exception as e:
-        err = str(e).lower()
-        if 'rate limit' in err or '429' in err or 'too many' in err:
-            time.sleep(15)
-        return None, None
+    for source in ('VCI', 'TCBS'):
+        rate_limited_sleep()
+        try:
+            df = _fetch_df(symbol, source)
+            if df is not None:
+                weekly = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
+                return df, weekly
+        except Exception as e:
+            err = str(e).lower()
+            if 'rate limit' in err or '429' in err or 'too many' in err:
+                time.sleep(15)
+            # Thu source tiep theo
+            continue
+    return None, None
 
 # -------------------- Chi bao --------------------
 def smma(series, period):
@@ -157,7 +166,7 @@ def run_backtest(symbol, initial_capital=50_000_000,
 
     daily, weekly = get_data(symbol)
     if daily is None or weekly is None:
-        return {'error': 'Khong lay duoc du lieu cho ma ' + symbol}
+        return {'error': 'Khong lay duoc du lieu cho ma ' + symbol + ' (thu ca VCI va TCBS)'}
 
     df_w    = calc_weekly_indicators(weekly)
     df_w_bt = df_w[df_w.index >= '2023-01-01']
