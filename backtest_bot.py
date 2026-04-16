@@ -27,10 +27,8 @@ from telegram.ext import (
 
 TOKEN   = '8578016275:AAGvL6SoOO3Yifqner8EcynwKt7OKgwl_J0'
 CHAT_ID = '7000478479'
-API_KEY = 'vnstock_b89d601e86a29649640f94ab0634433e'
 VN_TZ   = timezone(timedelta(hours=7))
 
-# API key duoc truyen truc tiep vao Vnstock(api_key=...) thay vi env
 logging.basicConfig(level=logging.INFO)
 
 SEP = '-' * 35
@@ -78,7 +76,8 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
 def _fetch_df(symbol, source):
     """Lay raw daily DataFrame tu mot source cu the. Tra ve None neu that bai."""
     from vnstock import Vnstock
-    stock = Vnstock(api_key=API_KEY).stock(symbol=symbol, source=source)
+    # FIX: vnstock 3.x khong con nhan api_key trong constructor
+    stock = Vnstock().stock(symbol=symbol, source=source)
     end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
     raw = stock.quote.history(start='2022-01-01', end=end, interval='1D')
 
