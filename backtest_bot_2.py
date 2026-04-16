@@ -81,7 +81,7 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
 def _fetch_df(symbol, source):
     """Lay raw daily DataFrame tu mot source cu the. Tra ve None neu that bai."""
     from vnstock import Vnstock
-    stock = Vnstock(api_key=API_KEY, show_log=False).stock(symbol=symbol, source=source)
+    stock = Vnstock(show_log=False).stock(symbol=symbol, source=source)
     end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
     raw = stock.quote.history(start='2022-01-01', end=end, interval='1D')
 
