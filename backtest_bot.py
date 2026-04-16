@@ -52,9 +52,10 @@ _last_call = [0.0]
 _lock = threading.Lock()
 
 def rate_limited_sleep():
+    """Gioi han 180 req/phut = 3 req/giay (goi Bronze)"""
     with _lock:
         now  = time.time()
-        wait = 1.0 - (now - _last_call[0])
+        wait = (1.0 / 3) - (now - _last_call[0])
         if wait > 0:
             time.sleep(wait)
         _last_call[0] = time.time()
@@ -391,42 +392,23 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trend_n  = CONFIG['trend_n']
     stop_pct = CONFIG['stop_pct']
 
-    await context.bot.send_message(
-        chat_id=chat_id, parse_mode='HTML',
-        text=(
-            '<b>Bat dau scan ' + str(total) + ' ma (song song)...</b>\n'
-            'Vol>' + str(vol_pct) + '% | Trend ' + str(trend_n) + 'p | Stop ' + str(stop_pct) + '%\n'
-            'Uoc tinh ~' + str(round(total / 60)) + ' phut...'
-        )
-    )
-
     results = []
     errors  = []
-    done    = [0]
     lock    = threading.Lock()
 
     def backtest_one(sym):
         r = run_backtest(sym, vol_pct=vol_pct, trend_n=trend_n, stop_pct=stop_pct)
         with lock:
-            done[0] += 1
             if 'error' not in r:
                 results.append({'symbol': sym, 'so_gd': r['so_gd'],
                                  'pct': r['pct'], 'lai_lo': r['lai_lo']})
             else:
                 errors.append(sym)
-        return done[0]
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=9) as executor:
         futures = {executor.submit(backtest_one, sym): sym for sym in symbols}
-        last_report = 0
         for future in as_completed(futures):
-            n = future.result()
-            if n - last_report >= 50:
-                last_report = n
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text='Tien do: ' + str(n) + '/' + str(total) + ' ma...'
-                )
+            future.result()
 
     if not results:
         await context.bot.send_message(chat_id=chat_id, text='Khong co du lieu.')
@@ -446,6 +428,15 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tong_ll = df_gd['lai_lo'].sum()
     tb_pct  = df_gd['pct'].mean()
 
+    # Profit Factor = tong loi nhuan / tong lo (theo gia tri tuyet doi)
+    tong_loi = df_gd.loc[df_gd['lai_lo'] > 0, 'lai_lo'].sum()
+    tong_lo  = df_gd.loc[df_gd['lai_lo'] < 0, 'lai_lo'].sum()
+    if tong_lo < 0:
+        profit_factor = tong_loi / abs(tong_lo)
+        pf_str = f"{profit_factor:.2f}"
+    else:
+        pf_str = 'N/A (khong co ma lo)'
+
     await context.bot.send_message(chat_id=chat_id, parse_mode='HTML', text=(
         '<b>KET QUA SCAN TOAN BO</b>\n'
         'Vol>' + str(vol_pct) + '% | Trend ' + str(trend_n) + 'p | Stop ' + str(stop_pct) + '%\n' +
@@ -462,6 +453,7 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         SEP + '\n'
         'Tong lai/lo  : ' + f"{tong_ll:+,.0f}" + 'd\n'
         'TB/ma        : ' + f"{tong_ll/n_gd:+,.0f}" + 'd (' + f"{tb_pct:+.2f}" + '%)\n'
+        'Profit Factor: ' + pf_str + '\n'
         '(Moi ma von 50tr)\n' + SEP
     ))
 
