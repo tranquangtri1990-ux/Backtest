@@ -1,5 +1,5 @@
 # ============================================================
-# BACKTEST FPT - CẬP NHẬT VNSTOCK3
+# BACKTEST FPT - FIXED FOR VNSTOCK3 (CẬP NHẬT CÚ PHÁP)
 # ============================================================
 import os
 import pandas as pd
@@ -11,17 +11,18 @@ API_KEY = 'vnstock_92c86f761ec105508ba230ede06850c7'
 SYMBOL = 'FPT'
 VN_TZ = timezone(timedelta(hours=7))
 
-# Thiết lập API Key cho vnstock3
+# vnstock3 sẽ tự động đọc biến môi trường này
 os.environ['VNSTOCK_API_KEY'] = API_KEY
 
 def get_data_fpt(symbol):
     try:
         from vnstock3 import Vnstock
-        # Khởi tạo Vnstock
-        vstock = Vnstock().config(api_key=API_KEY)
+        # Cách khởi tạo đúng của vnstock3: 
+        # Nếu đã set os.environ['VNSTOCK_API_KEY'], chỉ cần Vnstock()
+        vstock = Vnstock()
         
         # Lấy dữ liệu lịch sử
-        # Chú ý: resolution trong vnstock3 dùng '1D'
+        # Chú ý: vnstock3 dùng tham số 'symbol', 'start_date', 'end_date', 'resolution'
         df = vstock.stock_historical_data(
             symbol=symbol, 
             start_date='2022-01-01', 
@@ -34,25 +35,35 @@ def get_data_fpt(symbol):
             print(f"❌ Không lấy được dữ liệu cho {symbol}")
             return None
         
-        # Chuẩn hóa cột dữ liệu (vnstock3 thường trả về chữ thường)
+        # Chuẩn hóa tên cột (đảm bảo index là thời gian)
         df.columns = [c.lower() for c in df.columns]
-        t_col = 'time' if 'time' in df.columns else 'date'
         
-        df[t_col] = pd.to_datetime(df[t_col])
-        df = df.set_index(t_col).sort_index()
+        # vnstock3 thường trả về cột 'date' hoặc 'time'
+        t_col = 'date' if 'date' in df.columns else 'time'
+        if t_col in df.columns:
+            df[t_col] = pd.to_datetime(df[t_col])
+            df = df.set_index(t_col).sort_index()
         
-        # Đổi tên cột để dùng trong tính toán bên dưới
+        # Ép kiểu dữ liệu số để tính toán
+        cols_to_fix = ['open', 'high', 'low', 'close', 'volume']
+        for col in cols_to_fix:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Đổi tên cột để dùng trong logic backtest
         df = df.rename(columns={
             'open': 'Open', 'high': 'High', 'low': 'Low', 
             'close': 'Close', 'volume': 'Volume'
         })
-        return df
+        
+        return df.dropna(subset=['Close'])
     except Exception as e:
         print(f"❌ Lỗi truy vấn dữ liệu: {e}")
+        import traceback
+        traceback.print_exc() # In chi tiết lỗi để debug
         return None
 
 def smma(series, period):
-    """Tính đường SMMA cho RSI"""
     values = series.values.astype(float)
     result = np.full(len(values), np.nan)
     count, start = 0, -1
@@ -82,32 +93,33 @@ def run_fpt_backtest():
     print("-" * 40)
     
     df = get_data_fpt(SYMBOL)
-    if df is None: return
+    if df is None: 
+        print("Không có dữ liệu để backtest.")
+        return
 
     # Tính toán chỉ báo
     df['RSI'] = calculate_rsi(df)
     df['MA_RSI'] = df['RSI'].rolling(14).mean()
     
-    # Khởi tạo vốn và trạng thái
     initial_cap = 50_000_000
     cap = initial_cap
-    pos = None # Lưu thông tin lệnh đang mở
+    pos = None
     
-    # Chỉ backtest dữ liệu từ năm 2023 đến nay
     df_bt = df[df.index >= '2023-01-01'].copy()
+
+    if df_bt.empty:
+        print("Dữ liệu sau lọc (từ 2023) bị trống.")
+        return
 
     for i in range(1, len(df_bt)):
         current_date = df_bt.index[i]
         row = df_bt.iloc[i]
         prev_row = df_bt.iloc[i-1]
 
-        # Tín hiệu MUA
         if not pos:
             if prev_row['RSI'] <= prev_row['MA_RSI'] and row['RSI'] > row['MA_RSI']:
                 pos = {'date': current_date, 'price': row['Close']}
                 print(f"🟢 MUA  ngày {current_date.date()} | Giá: {row['Close']:,}")
-        
-        # Tín hiệu BÁN
         else:
             if prev_row['RSI'] >= prev_row['MA_RSI'] and row['RSI'] < row['MA_RSI']:
                 profit_pct = (row['Close'] - pos['price']) / pos['price'] * 100
