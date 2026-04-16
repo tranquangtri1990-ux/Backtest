@@ -8,9 +8,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
-    env:
-      VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -26,10 +23,12 @@ jobs:
         run: |
           wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
           chmod +x installer.run
-          ./installer.run -- --non-interactive --api-key "${{ secrets.VNSTOCK_API_KEY }}"
+          ./installer.run -- --non-interactive --api-key "vnstock_3519cd0014af8858dc6b96d189b8875e"
 
       - name: Run backtest bot
         run: python backtest_bot_2.py
+        env:
+          VNSTOCK_API_KEY: "vnstock_3519cd0014af8858dc6b96d189b8875e"
 
       - name: Upload CSV results as artifact
         if: always()
