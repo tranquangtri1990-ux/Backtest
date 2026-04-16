@@ -78,9 +78,20 @@ def _fetch_df(symbol, source):
     from vnstock import Vnstock
     stock = Vnstock().stock(symbol=symbol, source=source)
     end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
-    df = stock.quote.history(start='2022-01-01', end=end, interval='1D')
-    if df is None or df.empty:
+    raw = stock.quote.history(start='2022-01-01', end=end, interval='1D')
+
+    # vnstock moi co the tra ve dict {'data': [...]} hoac DataFrame
+    if isinstance(raw, dict):
+        if 'data' in raw:
+            df = pd.DataFrame(raw['data'])
+        else:
+            return None
+    else:
+        df = raw
+
+    if df is None or (hasattr(df, 'empty') and df.empty):
         return None
+
     df.columns = [c.lower() for c in df.columns]
     if 'time' in df.columns:
         df['time'] = pd.to_datetime(df['time'])
@@ -93,7 +104,7 @@ def _fetch_df(symbol, source):
 
 def get_data(symbol):
     last_errors = []
-    for source in ('VCI', 'TCBS'):
+    for source in ('VCI', 'MSN', 'KBS'):
         rate_limited_sleep()
         try:
             df = _fetch_df(symbol, source)
