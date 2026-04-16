@@ -18,8 +18,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy requests vnstock3
+          # Cài thêm ipython để tránh lỗi import từ vnstock3
+          pip install pandas numpy requests vnstock3 ipython
 
       - name: Run Backtest FPT
-        # Đảm bảo lệnh này gọi đúng file python bạn đã tạo
         run: python backtest_fpt.py
