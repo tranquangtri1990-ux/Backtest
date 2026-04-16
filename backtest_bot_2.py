@@ -11,71 +11,8 @@
 # ============================================================
 
 import os
-import subprocess
-import sys
 
 API_KEY = 'vnstock_3519cd0014af8858dc6b96d189b8875e'
-
-# ============================================================
-# CAI DAT VNSTOCK-CLI (theo huong dan vnstocks.com)
-# Su dung installer chinh thuc de kich hoat goi Bronze 180 req/phut
-# ============================================================
-def install_vnstock_cli():
-    """
-    Cai dat vnstock-cli qua installer chinh thuc cua vnstocks.com.
-    Tuong duong voi lenh:
-        wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
-        chmod +x installer.run
-        ./installer.run -- --non-interactive --api-key "API_KEY_CUA_BAN"
-    """
-    installer_url  = 'https://vnstocks.com/files/vnstock-cli-installer.run'
-    installer_path = '/tmp/vnstock_installer.run'
-
-    print('[vnstock-cli] Dang tai installer...')
-    result = subprocess.run(
-        ['wget', '-q', installer_url, '-O', installer_path],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        print('[vnstock-cli] Khong tai duoc installer:', result.stderr)
-        return False
-
-    os.chmod(installer_path, 0o755)
-
-    print('[vnstock-cli] Dang cai dat voi API key...')
-    result = subprocess.run(
-        [installer_path, '--', '--non-interactive', '--api-key', API_KEY],
-        capture_output=True, text=True
-    )
-    if result.returncode == 0:
-        print('[vnstock-cli] Cai dat thanh cong!')
-        print(result.stdout)
-        return True
-    else:
-        print('[vnstock-cli] Cai dat that bai:', result.stderr)
-        return False
-
-def ensure_vnstock_cli():
-    """
-    Kiem tra vnstock-cli da duoc cai chua.
-    Neu chua -> tu dong cai dat.
-    """
-    check = subprocess.run(
-        ['vnstock', '--version'],
-        capture_output=True, text=True
-    )
-    if check.returncode == 0:
-        print('[vnstock-cli] Da co san, phien ban:', check.stdout.strip())
-    else:
-        print('[vnstock-cli] Chua cai dat, bat dau cai...')
-        ok = install_vnstock_cli()
-        if not ok:
-            print('[vnstock-cli] CANH BAO: Khong cai duoc CLI, fallback sang env var.')
-
-# Chay kiem tra / cai dat khi khoi dong
-ensure_vnstock_cli()
-
-# Dat API key vao bien moi truong (fallback & tuong thich nguoc)
 os.environ['VNSTOCK_API_KEY'] = API_KEY
 
 import asyncio
@@ -160,7 +97,7 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
 # ============================================================
 def _fetch_df(symbol, source):
     """Lay raw daily DataFrame tu mot source cu the. Tra ve None neu that bai."""
-    from vnstock import Vnstock
+    from vnstock_data import Vnstock
     _rate_limiter.acquire()  # <-- acquire TRUOC moi API call
     stock = Vnstock(show_log=False).stock(symbol=symbol, source=source)
     end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
