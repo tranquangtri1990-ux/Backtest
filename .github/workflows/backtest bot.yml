@@ -17,9 +17,12 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install vnstock pandas requests numpy python-telegram-bot
+        # Sửa lỗi: Cài đặt vnstock3 thay vì vnstock cũ
+        run: |
+          pip install pandas requests numpy python-telegram-bot vnstock3
 
       - name: Run backtest bot
+        # Đảm bảo tên file này khớp với file .py của bạn
         run: python backtest_bot.py
 
       - name: Upload CSV results as artifact
