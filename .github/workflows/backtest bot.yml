@@ -20,7 +20,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install vnstock pandas requests numpy python-telegram-bot
+        run: pip install "vnstock >= 3.0.0" pandas requests numpy python-telegram-bot
 
       - name: Run backtest bot
         run: python backtest_bot_2.py
