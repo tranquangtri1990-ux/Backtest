@@ -16,6 +16,9 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Install requests truoc khi chay installer
+        run: pip install requests
+
       - name: Install vnstock-cli (kich hoat Bronze 180 req/phut)
         run: |
           wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
@@ -25,20 +28,17 @@ jobs:
       - name: Kiem tra venv va cac module co san
         run: |
           source /home/runner/.venv/bin/activate
-          echo "=== Python path ==="
-          which python
-          echo "=== Pip list ==="
+          echo "=== pip list vnstock ==="
           pip list | grep -i vnstock
           echo "=== Thu import ==="
           python -c "import vnstock; print('vnstock OK')" 2>/dev/null || echo "vnstock: NOT FOUND"
           python -c "from vnstock import Vnstock; print('vnstock.Vnstock OK')" 2>/dev/null || echo "vnstock.Vnstock: NOT FOUND"
           python -c "import vnstock_data; print('vnstock_data OK')" 2>/dev/null || echo "vnstock_data: NOT FOUND"
-          python -c "from vnstock_data import Vnstock; print('vnstock_data.Vnstock OK')" 2>/dev/null || echo "vnstock_data.Vnstock: NOT FOUND"
 
       - name: Install dependencies vao venv
         run: |
           source /home/runner/.venv/bin/activate
-          pip install pandas requests numpy python-telegram-bot
+          pip install pandas numpy python-telegram-bot
 
       - name: Run backtest bot
         run: |
