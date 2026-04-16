@@ -1,0 +1,23 @@
+name: Test FPT Data
+
+on:
+  workflow_dispatch: # Nut bam thu cong tren GitHub
+
+jobs:
+  test_data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas numpy requests vnstock3
+
+      - name: Run Test Script
+        run: python test_fpt.py
