@@ -27,7 +27,7 @@ from telegram.ext import (
 
 TOKEN   = '8578016275:AAGvL6SoOO3Yifqner8EcynwKt7OKgwl_J0'
 CHAT_ID = '7000478479'
-API_KEY = 'vnstock_92c86f761ec105508ba230ede06850c7'
+API_KEY = 'vnstock_b89d601e86a29649640f94ab0634433e'
 VN_TZ   = timezone(timedelta(hours=7))
 
 # API key duoc truyen truc tiep vao Vnstock(api_key=...) thay vi env
