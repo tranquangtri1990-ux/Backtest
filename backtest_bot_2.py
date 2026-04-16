@@ -29,7 +29,7 @@ from telegram.ext import (
     filters, ContextTypes
 )
 
-TOKEN   = '8578016275:AAGvL6SoOO3Yifqner8EcynwKl_J0'
+TOKEN   = '8578016275:AAGvL6SoOO3Yifqner8EcynwKt7OKgwl_J0'
 CHAT_ID = '7000478479'
 VN_TZ   = timezone(timedelta(hours=7))
 
