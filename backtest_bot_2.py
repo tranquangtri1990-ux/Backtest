@@ -11,6 +11,11 @@
 # ============================================================
 
 import os
+
+# ---- SET API KEY TRUOC KHI IMPORT VNSTOCK ----
+API_KEY = 'vnstock_b89d601e86a29649640f94ab0634433e'
+os.environ['VNSTOCK_API_KEY'] = API_KEY
+
 import asyncio
 import logging
 import threading
@@ -28,11 +33,6 @@ from telegram.ext import (
 TOKEN   = '8578016275:AAGvL6SoOO3Yifqner8EcynwKt7OKgwl_J0'
 CHAT_ID = '7000478479'
 VN_TZ   = timezone(timedelta(hours=7))
-
-# API key duoc set qua bien moi truong VNSTOCK_API_KEY (vnstock 3.x)
-# Trong GitHub Actions, set trong env: VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
-# Dong nay de chay local - nen dung GitHub Secret thay vi hardcode:
-os.environ.setdefault('VNSTOCK_API_KEY', 'vnstock_b89d601e86a29649640f94ab0634433e')
 
 logging.basicConfig(level=logging.INFO)
 
@@ -81,8 +81,7 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
 def _fetch_df(symbol, source):
     """Lay raw daily DataFrame tu mot source cu the. Tra ve None neu that bai."""
     from vnstock import Vnstock
-    # vnstock 3.x tu doc VNSTOCK_API_KEY tu bien moi truong
-    stock = Vnstock().stock(symbol=symbol, source=source)
+    stock = Vnstock(api_key=API_KEY, show_log=False).stock(symbol=symbol, source=source)
     end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
     raw = stock.quote.history(start='2022-01-01', end=end, interval='1D')
 
@@ -433,23 +432,6 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trend_n  = CONFIG['trend_n']
     stop_pct = CONFIG['stop_pct']
 
-    # ---- Thong bao bat dau ----
-    bat_dau = datetime.now(VN_TZ).strftime('%H:%M:%S %d/%m/%Y')
-    await context.bot.send_message(
-        chat_id=chat_id, parse_mode='HTML',
-        text=(
-            '<b>Bat dau Scan Toan Bo!</b>\n' +
-            SEP + '\n'
-            'Tong so ma : ' + str(total) + '\n'
-            'Vol        : >' + str(vol_pct) + '% MA20\n'
-            'Trend      : ' + str(trend_n) + ' phien\n'
-            'Stop       : ' + str(stop_pct) + '%\n'
-            'Bat dau    : ' + bat_dau + '\n' +
-            SEP + '\n'
-            'Dang xu ly, vui long doi...'
-        )
-    )
-
     results = []
     errors  = []
     lock    = threading.Lock()
@@ -495,7 +477,6 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         pf_str = 'N/A (khong co ma lo)'
 
-    ket_thuc = datetime.now(VN_TZ).strftime('%H:%M:%S %d/%m/%Y')
     await context.bot.send_message(chat_id=chat_id, parse_mode='HTML', text=(
         '<b>KET QUA SCAN TOAN BO</b>\n'
         'Vol>' + str(vol_pct) + '% | Trend ' + str(trend_n) + 'p | Stop ' + str(stop_pct) + '%\n' +
@@ -513,8 +494,7 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'Tong lai/lo  : ' + f"{tong_ll:+,.0f}" + 'd\n'
         'TB/ma        : ' + f"{tong_ll/n_gd:+,.0f}" + 'd (' + f"{tb_pct:+.2f}" + '%)\n'
         'Profit Factor: ' + pf_str + '\n'
-        '(Moi ma von 50tr)\n'
-        'Hoan thanh   : ' + ket_thuc + '\n' + SEP
+        '(Moi ma von 50tr)\n' + SEP
     ))
 
     top_loi = df_gd.nlargest(5, 'pct')[['symbol', 'pct', 'lai_lo', 'so_gd']]
