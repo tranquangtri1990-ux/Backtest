@@ -92,6 +92,7 @@ def _fetch_df(symbol, source):
     return df if not df.empty else None
 
 def get_data(symbol):
+    last_errors = []
     for source in ('VCI', 'TCBS'):
         rate_limited_sleep()
         try:
@@ -99,13 +100,17 @@ def get_data(symbol):
             if df is not None:
                 weekly = df.resample('W-FRI').agg({'Close': 'last', 'Volume': 'sum'}).dropna()
                 return df, weekly
+            else:
+                last_errors.append(source + ':empty')
         except Exception as e:
-            err = str(e).lower()
-            if 'rate limit' in err or '429' in err or 'too many' in err:
+            err = str(e)
+            logging.warning('[get_data] %s / %s: %s', symbol, source, err)
+            last_errors.append(source + ':' + err[:120])
+            if any(k in err.lower() for k in ['rate limit', '429', 'too many']):
                 time.sleep(15)
-            # Thu source tiep theo
             continue
-    return None, None
+    logging.warning('[get_data] %s failed: %s', symbol, ' | '.join(last_errors))
+    return None, last_errors
 
 # -------------------- Chi bao --------------------
 def smma(series, period):
@@ -165,8 +170,9 @@ def run_backtest(symbol, initial_capital=50_000_000,
     stop_mult = 1 - stop_pct / 100
 
     daily, weekly = get_data(symbol)
-    if daily is None or weekly is None:
-        return {'error': 'Khong lay duoc du lieu cho ma ' + symbol + ' (thu ca VCI va TCBS)'}
+    if daily is None:
+        err_detail = ' | '.join(weekly) if isinstance(weekly, list) else 'unknown'
+        return {'error': 'Khong lay duoc du lieu cho ma ' + symbol + ' | ' + err_detail}
 
     df_w    = calc_weekly_indicators(weekly)
     df_w_bt = df_w[df_w.index >= '2023-01-01']
