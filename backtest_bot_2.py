@@ -12,7 +12,7 @@
 
 import os
 
-API_KEY = 'vnstock_b89d601e86a29649640f94ab0634433e'
+API_KEY = 'vnstock_3519cd0014af8858dc6b96d189b8875e'
 os.environ['VNSTOCK_API_KEY'] = API_KEY
 
 import asyncio
@@ -29,7 +29,7 @@ from telegram.ext import (
     filters, ContextTypes
 )
 
-TOKEN   = 'vnstock_3519cd0014af8858dc6b96d189b8875e'
+TOKEN   = '8578016275:AAGvL6SoOO3Yifqner8EcynwKt7OKgwl_J0'
 CHAT_ID = '7000478479'
 VN_TZ   = timezone(timedelta(hours=7))
 
