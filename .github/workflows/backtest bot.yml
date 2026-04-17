@@ -20,9 +20,9 @@ jobs:
           chmod +x installer.run
           ./installer.run -- --non-interactive --api-key "vnstock_3519cd0014af8858dc6b96d189b8875e"
 
-      - name: Install dependencies vao venv cua vnstock-cli
+      - name: Install dependencies vao venv bang uv
         run: |
-          /home/runner/.venv/bin/python -m pip install --force-reinstall pandas numpy "python-telegram-bot==20.7"
+          uv pip install --python /home/runner/.venv/bin/python pandas numpy "python-telegram-bot==20.7"
           echo "=== Kiem tra ==="
           /home/runner/.venv/bin/python -c "import telegram; print('telegram OK')"
           /home/runner/.venv/bin/python -c "from vnstock_data import Vnstock; print('vnstock_data OK')"
