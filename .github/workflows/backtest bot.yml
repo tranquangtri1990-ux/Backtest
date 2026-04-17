@@ -8,10 +8,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
-    defaults:
-      run:
-        shell: bash
-
     steps:
       - uses: actions/checkout@v4
 
@@ -26,18 +22,13 @@ jobs:
 
       - name: Install dependencies vao venv cua vnstock-cli
         run: |
-          source /home/runner/.venv/bin/activate
-          pip install pandas numpy "python-telegram-bot==20.7"
+          /home/runner/.venv/bin/python -m pip install --force-reinstall pandas numpy "python-telegram-bot==20.7"
           echo "=== Kiem tra ==="
-          which python
-          python -c "import telegram; print('telegram OK')"
-          python -c "from vnstock_data import Vnstock; print('vnstock_data OK')"
+          /home/runner/.venv/bin/python -c "import telegram; print('telegram OK')"
+          /home/runner/.venv/bin/python -c "from vnstock_data import Vnstock; print('vnstock_data OK')"
 
       - name: Run backtest bot
-        run: |
-          source /home/runner/.venv/bin/activate
-          which python
-          python backtest_bot_2.py
+        run: /home/runner/.venv/bin/python backtest_bot_2.py
         env:
           VNSTOCK_API_KEY: "vnstock_3519cd0014af8858dc6b96d189b8875e"
 
