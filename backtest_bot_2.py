@@ -97,7 +97,7 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
 # ============================================================
 def _fetch_df(symbol, source):
     """Lay raw daily DataFrame tu mot source cu the. Tra ve None neu that bai."""
-    from vnstock_data import Vnstock
+    from vnstock import Vnstock
     _rate_limiter.acquire()  # <-- acquire TRUOC moi API call
     stock = Vnstock(show_log=False).stock(symbol=symbol, source=source)
     end   = datetime.now(VN_TZ).strftime('%Y-%m-%d')
