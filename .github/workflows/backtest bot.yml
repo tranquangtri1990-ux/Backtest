@@ -11,11 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
       - name: Install requests truoc khi chay installer
         run: pip install requests
 
@@ -25,21 +20,14 @@ jobs:
           chmod +x installer.run
           ./installer.run -- --non-interactive --api-key "vnstock_3519cd0014af8858dc6b96d189b8875e"
 
-      - name: Tim kiem venv va module
+      - name: Install dependencies vao venv cua vnstock-cli
         run: |
-          echo "=== Tim tat ca venv ==="
-          find /home/runner -name "activate" 2>/dev/null
-          find /opt -name "activate" 2>/dev/null
-          echo "=== Thu pip list vnstock (system) ==="
-          pip list | grep -i vnstock || echo "Khong co vnstock o system"
-          echo "=== Tim vnstock trong site-packages ==="
-          find / -name "vnstock*" -type d 2>/dev/null | head -20
-
-      - name: Install dependencies va run
-        run: |
+          source /home/runner/.venv/bin/activate
           pip install pandas numpy python-telegram-bot
-          echo "=== pip list vnstock sau install ==="
-          pip list | grep -i vnstock
+
+      - name: Run backtest bot
+        run: |
+          source /home/runner/.venv/bin/activate
           python backtest_bot_2.py
         env:
           VNSTOCK_API_KEY: "vnstock_3519cd0014af8858dc6b96d189b8875e"
